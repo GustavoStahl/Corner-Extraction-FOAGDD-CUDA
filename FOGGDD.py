@@ -8,25 +8,27 @@ def assert_arrays(array_name, array_new):
     assert array_diff.max() <= 1e-5, f"{array_name} don't match. Min {array_diff.min()}, Max {array_diff.max()}"
     print(f"{array_name} match. Min {array_diff.min()}, Max {array_diff.max()}")
 
-def nonma(cim,threshold,radius):
-    rows,cols=np.shape(cim)
+def nonma(cim, threshold, radius):
+    rows, cols = cim.shape[:2]
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (radius, radius))
-    mx=cv2.dilate(cim,kernel)
-    bordermask=np.zeros_like(cim,dtype=np.int)
-    bordermask[radius+1:rows-radius,radius+1:cols-radius]=1
-    t = (cim == mx).astype(int)
-    t2 = (cim > threshold).astype(int)
-    cimmx=t & t2 & bordermask
-    return np.array(cimmx.nonzero()).T
+    mx = cv2.dilate(cim, kernel)
+    bordermask = np.zeros_like(cim, dtype=bool)
+    bordermask[radius+1:rows-radius, radius+1:cols-radius] = True
+    t = cim == mx
+    t2 = cim > threshold
+    cimmx = t & t2 & bordermask
+    return np.transpose(cimmx.nonzero())
 
-def foggdd(im, threshold):
+def foggdd(_im, threshold):
+    im = _im.copy()
+
     rho = 1.5
     directions_n = 8
     sigmas = np.linspace(1.5, 4.5, num=3)
-    eps = 2.220 * 10 ** (-16) # 2.22e-16 
+    eps = 2.22e-16 
     nonma_radius = 5
 
-    if im.shape[2]!=1:
+    if im.ndim >= 3 and im.shape[2] != 1:
         im = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
     rows, cols = im.shape[:2]
 
@@ -41,7 +43,6 @@ def foggdd(im, threshold):
     rho_mat = np.array([rho, 0, 0, 1/rho]).reshape(2,2)
 
     templates = np.empty((directions_n, len(sigmas), *im_padded.shape[:2]), dtype=float)
-    anigs_directions = np.empty((directions_n, len(sigmas), lattice_size, lattice_size), dtype=float)
     for direction_idx in range(directions_n):
         theta = direction_idx * np.pi / directions_n
         R = np.array([np.cos(theta), np.sin(theta), -np.sin(theta), np.cos(theta)]).reshape(2,2)
@@ -57,15 +58,13 @@ def foggdd(im, threshold):
                 agk = 1/(2 * np.pi * sigma * sigma) * np.exp(-1/(2 * sigma) * n_T @ R_T @ rho_mat @ R @ n)
                 agdd = -rho * np.array([np.cos(theta), np.sin(theta)]) @ n * agk  
                 anigs_direction[lattice_index] = agdd
-            anigs_directions[direction_idx, sigma_idx] = anigs_direction
 
             conv_filter = anigs_direction - anigs_direction.sum()/anigs_direction.size
             template = cv2.filter2D(im_padded, -1, cv2.flip(conv_filter,-1), borderType=cv2.BORDER_CONSTANT) 
             # template = signal.convolve2d(im_padded, conv_filter, mode='same')
             templates[direction_idx, sigma_idx] = template
 
-    # assert_arrays("anigs_directions", anigs_directions)
-    # assert_arrays("templates", templates) #! test
+    assert_arrays("templates", templates)
     # templates = np.load("gt_arrays/templates.npy", allow_pickle=True)
 
     # NOTE: The code below is creating the following mask
@@ -89,27 +88,65 @@ def foggdd(im, threshold):
     mask[-1,:2] = False
     mask[-1,-2:] = False
 
-    # another approach
-    # mask = [20,27,34,12,19,26,33,40,4,11,18,25,32,39,46,3,10,17,24,31,38,45,2,9,16,23,30,37,44,8,15,22,29,36,14,21,28]
-
-    measure = np.empty((rows, cols), dtype=float)
-    for i in range(rows):
+    corner_measure = np.empty((rows, cols), dtype=float)
+    for (i,j) in np.ndindex(rows,cols):
         top = i + patch_size - 3
         bottom = i + patch_size + 3
-        for j in range(cols):
-            left = j + patch_size - 3
-            right = j + patch_size + 3
+        left = j + patch_size - 3
+        right = j + patch_size + 3
 
-            templates_slice = templates[:, 0, top:bottom+1, left:right+1][:, mask] # 8x37
-            templates_slice = np.abs(templates_slice)
-            mat = templates_slice @ templates_slice.T
-            measure[i, j] = np.linalg.det(mat) / (np.trace(mat) + eps)
+        templates_slice = templates[:, 0, top:bottom+1, left:right+1] # 8x49
+        templates_slice = np.abs(templates_slice[:, mask]) # 8x37
+        #NOTE this matrix is symmetric, thus it has real eigenvalues and eigenvectors
+        mat = templates_slice @ templates_slice.T
+        #NOTE approximation of: product of eigenvalues / sum of eigenvalues
+        corner_measure[i, j] = np.linalg.det(mat) / (np.trace(mat) + eps) 
             
     # assert_arrays("measure", measure) #! test
 
-    measure_nonma = nonma(measure, threshold, nonma_radius)
-    # assert_arrays("measure_nonma", measure_nonma)
+    points_of_interest = nonma(corner_measure, threshold, nonma_radius)
+    assert_arrays("measure_nonma", points_of_interest)
+
+    for sigma_idx in range(1, len(sigmas)):
+        poi_maintained_mask = []
+        for (i,j) in points_of_interest:
+
+            top = i + patch_size - 3
+            bottom = i + patch_size + 3
+            left = j + patch_size - 3
+            right = j + patch_size + 3
+
+            templates_slice = templates[:, sigma_idx, top:bottom+1, left:right+1] # 8x49
+            templates_slice = np.abs(templates_slice[:, mask]) # 8x37
+            mat = templates_slice @ templates_slice.T
+            corner_measure = np.linalg.det(mat) / (np.trace(mat) + eps) 
+
+            poi_maintained_mask.append(corner_measure > threshold)
+
+        points_of_interest = points_of_interest[poi_maintained_mask]
+
+    return points_of_interest        
 
 if __name__ == "__main__":
     im = cv2.imread("17.bmp")
-    foggdd(im, 10 ** 8.4)   
+    poi_arr = foggdd(im, 10 ** 8.4)   
+    poi_arr_prev = np.load("gt_arrays/measure_3.npy")
+
+    # [[y1,x1],...] --> [[x1,y1],...]
+    poi_arr = np.flip(poi_arr,axis=-1)
+    poi_arr_prev = np.flip(poi_arr_prev,axis=-1) 
+
+    for poi in np.unique(np.vstack((poi_arr, poi_arr_prev)), axis=0):
+        if (poi == poi_arr_prev).all(1).any() and (poi == poi_arr).all(1).any():
+            color = (0,255,0)
+        elif (poi == poi_arr_prev).all(1).any():
+            color = (0,0,255)
+        else:
+            color = (255,0,0)
+
+        cv2.drawMarker(im, poi, color, cv2.MARKER_SQUARE, markerSize=2, thickness=1, line_type=cv2.LINE_AA)
+
+    cv2.namedWindow("FOGGDD", 0)
+    cv2.imshow("FOGGDD", im)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
