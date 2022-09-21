@@ -15,6 +15,23 @@
 #include <opencv2/cudafilters.hpp>
 #include <opencv2/core/cuda.hpp>
 
+cv::Mat nonma(cv::Mat cim, double threshold, size_t radius)
+{
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(radius, radius));
+    cv::Mat mx, cimmx, cimmx_nonzero;
+    cv::dilate(cim, mx, kernel);
+
+    cv::Mat bordermask = cv::Mat::zeros(cim.size(), CV_8U);
+    size_t width = cim.cols - 2*radius-1;
+    size_t height = cim.rows - 2*radius-1;
+    cv::Rect roi(radius+1, radius+1, width, height);
+    bordermask(roi) = 1;
+
+    cv::bitwise_and(cim == mx, cim > threshold, cimmx, bordermask);
+    cv::findNonZero(cimmx, cimmx_nonzero);    
+    return cimmx_nonzero;
+}
+
 std::vector<std::vector<cv::Mat>> compute_templates(const cv::Mat &im_padded, int directions_n, std::vector<double> sigmas, double rho, int lattice_size)
 {
     Eigen::Matrix<double,2,2,Eigen::RowMajor> rho_mat {{rho, 0.0}, {0.0, 1/rho}};
@@ -104,8 +121,107 @@ cv::Mat foggdd(const cv::Mat &img)
     auto end = std::chrono::steady_clock::now();
     std::cout << "Computed templates: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
 
-    return cv::Mat();
+    // cnpy::npy_save("../pred_arrays/templates.npy", reinterpret_cast<double *>(im_templates[0][0].data), {im_templates[0][0].rows, im_templates[0][0].cols}, "w");
 
+    cv::Mat mask = cv::Mat::ones(patch_size, patch_size, CV_8U), mask_indexes;
+    mask.at<uint8_t>(0,0) = 0;
+    mask.at<uint8_t>(0,1) = 0;
+    mask.at<uint8_t>(0,patch_size-1) = 0;
+    mask.at<uint8_t>(0,patch_size-2) = 0;
+    mask.at<uint8_t>(1,0) = 0;
+    mask.at<uint8_t>(1,patch_size-1) = 0;
+    mask.at<uint8_t>(patch_size-2,0) = 0;
+    mask.at<uint8_t>(patch_size-2,patch_size-1) = 0;
+    mask.at<uint8_t>(patch_size-1,0) = 0;
+    mask.at<uint8_t>(patch_size-1,1) = 0;
+    mask.at<uint8_t>(patch_size-1,patch_size-1) = 0;
+    mask.at<uint8_t>(patch_size-1,patch_size-2) = 0;
+    cv::findNonZero(mask, mask_indexes);
+    size_t mask_len = mask_indexes.total();
+
+    cv::Mat corner_measure(rows, cols, CV_64F);
+    start = std::chrono::steady_clock::now();
+    #pragma omp parallel for collapse(2)
+    for(size_t i=0; i<rows; i++)
+    {
+        for(size_t j=0; j<cols; j++)
+        {
+            cv::Rect roi(j + patch_size - 3,i + patch_size - 3,patch_size,patch_size);
+            cv::Mat templates_slice(directions_n, mask_len, CV_64F);
+            for(size_t d=0; d<directions_n; d++)
+            {
+                cv::Mat im_template = im_templates[d][0](roi);
+                for(size_t mask_i=0; mask_i < mask_len; mask_i++)
+                {
+                    cv::Point point = mask_indexes.at<cv::Point>(mask_i);
+                    templates_slice.at<double>(d,mask_i) = im_template.at<double>(point);
+                }
+            }
+            cv::absdiff(templates_slice, cv::Scalar::all(0), templates_slice);
+            cv::Mat template_symmetric(directions_n, directions_n, CV_64F);
+            //NOTE this matrix is symmetric, thus it has real eigenvalues and eigenvectors
+            cv::mulTransposed(templates_slice, template_symmetric, false); // templates_slice * templates_slice.T
+            //NOTE approximation of: product of eigenvalues / sum of eigenvalues
+            corner_measure.at<double>(i,j) = cv::determinant(template_symmetric) / (cv::trace(template_symmetric)[0] + eps);
+        }
+    }
+    end = std::chrono::steady_clock::now();
+    std::cout << "Iter through the first scale: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
+
+    start = std::chrono::steady_clock::now();
+    cv::Mat points_of_interest = nonma(corner_measure, threshold, nonma_radius);
+    end = std::chrono::steady_clock::now();
+    std::cout << "Nonma: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
+    // cnpy::npy_save("../pred_arrays/measure_nonma.npy", reinterpret_cast<double *>(corner_measure.data), {corner_measure.rows, corner_measure.cols});
+
+    start = std::chrono::steady_clock::now();
+    for(size_t sigma_idx=1; sigma_idx < sigmas.size(); sigma_idx++)
+    {
+        std::vector<cv::Point> points_of_interest_filtered;
+        size_t points_of_interest_len = points_of_interest.total();
+        for(size_t point_idx=0; point_idx<points_of_interest_len; point_idx++)
+        {
+            cv::Point point = points_of_interest.at<cv::Point>(point_idx);
+            int i = point.y, j = point.x;
+            int y = i + patch_size - 3, x = j + patch_size - 3;
+
+            cv::Rect roi(x,y,patch_size,patch_size);
+            cv::Mat templates_slice(directions_n, mask_len, CV_64F);
+            for(size_t d=0; d<directions_n; d++)
+            {
+                cv::Mat im_template = im_templates[d][sigma_idx](roi);
+                for(size_t mask_i=0; mask_i < mask_len; mask_i++)
+                {
+                    cv::Point point = mask_indexes.at<cv::Point>(mask_i);
+                    templates_slice.at<double>(d,mask_i) = im_template.at<double>(point);
+                }
+            }
+            cv::absdiff(templates_slice, cv::Scalar::all(0), templates_slice);
+            cv::Mat template_symmetric(directions_n, directions_n, CV_64F);
+            //NOTE this matrix is symmetric, thus it has real eigenvalues and eigenvectors
+            cv::mulTransposed(templates_slice, template_symmetric, false); // templates_slice * templates_slice.T
+            //NOTE approximation of: product of eigenvalues / sum of eigenvalues
+            double measure = cv::determinant(template_symmetric) / (cv::trace(template_symmetric)[0] + eps);   
+            if (measure > threshold)
+            {
+                points_of_interest_filtered.push_back(point);
+            }
+        }
+        points_of_interest = cv::Mat(points_of_interest_filtered, true);
+    }    
+    end = std::chrono::steady_clock::now();
+    std::cout << "Iter through scales: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
+
+    return points_of_interest;
+
+    // std::vector<int> output; 
+    // for(size_t point_idx=0; point_idx < points_of_interest.total(); point_idx++)
+    // {
+    //     cv::Point point = points_of_interest.at<cv::Point>(point_idx);
+    //     output.push_back(point.y);
+    //     output.push_back(point.x);
+    // }
+    // cnpy::npy_save("../pred_arrays/measure_3.npy", &output[0], {output.size()});
 }
 
 void cnpy2eigen(std::string data_fname, cv::Mat &out_mat){
@@ -133,4 +249,13 @@ int main(int argc, char **argv)
     auto end = std::chrono::steady_clock::now();
     std::cout << "Elapsed time in milliseconds: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
 
+    for(size_t point_idx=0; point_idx < points_of_interest.total(); point_idx++)
+    {
+        cv::Point point = points_of_interest.at<cv::Point>(point_idx);
+        cv::drawMarker(img, point, cv::Scalar(0,0,255), cv::MARKER_SQUARE, 2, 1, cv::LINE_AA);
+    }
+    cv::namedWindow("jonas", 0);
+    cv::imshow("jonas", img);
+    cv::waitKey(0);
+    cv::destroyAllWindows();
 }
