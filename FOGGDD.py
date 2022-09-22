@@ -19,28 +19,12 @@ def nonma(cim, threshold, radius):
     cimmx = t & t2 & bordermask
     return np.transpose(cimmx.nonzero())
 
-def foggdd(_im, threshold):
-    im = _im.copy()
+def compute_templates(im_padded, directions_n, sigmas, rho, lattice_size):    
+    rho_mat = np.array([rho, 0, 0, 1/rho]).reshape(2,2)
 
-    rho = 1.5
-    directions_n = 8
-    sigmas = np.linspace(1.5, 4.5, num=3)
-    eps = 2.22e-16 
-    nonma_radius = 5
-
-    if im.ndim >= 3 and im.shape[2] != 1:
-        im = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
-    rows, cols = im.shape[:2]
-
-    patch_size = 7
-    im_padded = cv2.copyMakeBorder(im, patch_size, patch_size, patch_size, patch_size, cv2.BORDER_REFLECT).astype(np.float32)
-
-    lattice_size = 31 # consider the origin in the lattice
     lattice_axis = np.arange(-(lattice_size//2), lattice_size//2+1, dtype=int)
     lattice_xx, lattice_yy = np.meshgrid(lattice_axis, lattice_axis, indexing="ij")
     lattice = np.concatenate((np.expand_dims(lattice_xx, -1), np.expand_dims(lattice_yy,-1)), axis=-1)
-
-    rho_mat = np.array([rho, 0, 0, 1/rho]).reshape(2,2)
 
     templates = np.empty((directions_n, len(sigmas), *im_padded.shape[:2]), dtype=float)
     for direction_idx in range(directions_n):
@@ -62,7 +46,27 @@ def foggdd(_im, threshold):
             conv_filter = anigs_direction - anigs_direction.sum()/anigs_direction.size
             template = cv2.filter2D(im_padded, -1, cv2.flip(conv_filter,-1), borderType=cv2.BORDER_CONSTANT) 
             # template = signal.convolve2d(im_padded, conv_filter, mode='same')
-            templates[direction_idx, sigma_idx] = template
+            templates[direction_idx, sigma_idx] = template    
+    return templates            
+
+def foggdd(_im, threshold):
+    im = _im.copy()
+
+    rho = 1.5
+    directions_n = 8
+    sigmas = np.linspace(1.5, 4.5, num=3)
+    eps = 2.22e-16 
+    nonma_radius = 5
+
+    if im.ndim >= 3 and im.shape[2] != 1:
+        im = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+    rows, cols = im.shape[:2]
+
+    patch_size = 7
+    im_padded = cv2.copyMakeBorder(im, patch_size, patch_size, patch_size, patch_size, cv2.BORDER_REFLECT).astype(np.float32)
+
+    lattice_size = 31 # consider the origin in the lattice
+    templates = compute_templates(im_padded, directions_n, sigmas, rho, lattice_size)
 
     assert_arrays("templates", templates)
     # templates = np.load("gt_arrays/templates.npy", allow_pickle=True)
