@@ -84,7 +84,8 @@ std::vector<std::vector<cv::Mat>> compute_templates(const cv::Mat &im_padded, in
             // im_template_gpu.download(im_template);
 
             cv::filter2D(im_padded, im_template, -1, conv_filter, cv::Point(-1,-1), 0, cv::BORDER_CONSTANT);
-            im_templates[direction_idx][sigma_idx] = im_template;
+            cv::absdiff(im_template, cv::Scalar::all(0), im_template);
+            im_templates[direction_idx][sigma_idx] = im_template; 
         }
     }
 
@@ -157,7 +158,6 @@ cv::Mat foggdd(const cv::Mat &img)
                     templates_slice.at<double>(d,mask_i) = im_template.at<double>(point);
                 }
             }
-            cv::absdiff(templates_slice, cv::Scalar::all(0), templates_slice);
             cv::Mat template_symmetric(directions_n, directions_n, CV_64F);
             //NOTE this matrix is symmetric, thus it has real eigenvalues and eigenvectors
             cv::mulTransposed(templates_slice, template_symmetric, false); // templates_slice * templates_slice.T
@@ -196,7 +196,6 @@ cv::Mat foggdd(const cv::Mat &img)
                     templates_slice.at<double>(d,mask_i) = im_template.at<double>(point);
                 }
             }
-            cv::absdiff(templates_slice, cv::Scalar::all(0), templates_slice);
             cv::Mat template_symmetric(directions_n, directions_n, CV_64F);
             //NOTE this matrix is symmetric, thus it has real eigenvalues and eigenvectors
             cv::mulTransposed(templates_slice, template_symmetric, false); // templates_slice * templates_slice.T
