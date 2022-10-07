@@ -14,8 +14,10 @@ find_package(CUDAToolkit)
 
 add_library(cnpy SHARED "cnpy/cnpy.cpp")
 
+add_library( FOGGDD_kernel SHARED FOGGDD_kernels.cu )
+
 add_executable( FOGGDD FOGGDD.cpp )
-target_link_libraries( FOGGDD ${OpenCV_LIBS} cnpy OpenMP::OpenMP_CXX CUDA::nppc)
+target_link_libraries( FOGGDD ${OpenCV_LIBS} cnpy OpenMP::OpenMP_CXX CUDA::nppc FOGGDD_kernel)
 
 # This line of code will generate a binary optimized to my CUDA architecture (Pascal).
 # Depending on the GPU, this should be changed

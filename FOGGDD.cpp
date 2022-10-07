@@ -3,17 +3,17 @@
 #include <math.h>
 #include <chrono>
 #include <vector>
+
 #include <cuda_runtime.h>
+#include <npp.h>
 
 #include "cnpy/cnpy.h"
 #include <Eigen/Dense>
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/imgproc.hpp>
-#include <npp.h>
 
-#include <opencv2/cudafilters.hpp>
-#include <opencv2/core/cuda.hpp>
+extern "C" double* first_corner_measures(double *im_templates, int width, int height, int directions_n, int patch_size, double eps);
 
 cv::Mat nonma(cv::Mat cim, double threshold, size_t radius)
 {
@@ -74,15 +74,6 @@ std::vector<std::vector<cv::Mat>> compute_templates(const cv::Mat &im_padded, in
 
             cv::flip(conv_filter,conv_filter,-1);
 
-            // conv_filter_gpu.upload(conv_filter);
-            // cv::Ptr<cv::cuda::Filter> filter = cv::cuda::createLinearFilter(im_padded_gpu.type(), 
-            //                                                                 im_padded_gpu.type(), 
-            //                                                                 conv_filter, 
-            //                                                                 cv::Point(-1,-1), 
-            //                                                                 cv::BORDER_CONSTANT);
-            // filter->apply(im_padded_gpu, im_template_gpu);
-            // im_template_gpu.download(im_template);
-
             cv::filter2D(im_padded, im_template, -1, conv_filter, cv::Point(-1,-1), 0, cv::BORDER_CONSTANT);
             cv::absdiff(im_template, cv::Scalar::all(0), im_template);
             im_templates[direction_idx][sigma_idx] = im_template; 
@@ -114,13 +105,26 @@ cv::Mat foggdd(const cv::Mat &img)
     cv::Mat im_padded;
     cv::copyMakeBorder(img_gray, im_padded, patch_size, patch_size, patch_size, patch_size, cv::BORDER_REFLECT);
 
-    // cv::cuda::GpuMat im_padded_gpu, conv_filter_gpu, im_template_gpu;
-    // im_padded_gpu.upload(im_padded);
-
     auto start = std::chrono::steady_clock::now();
     std::vector<std::vector<cv::Mat>> im_templates = compute_templates(im_padded, directions_n, sigmas, rho, lattice_size);
     auto end = std::chrono::steady_clock::now();
     std::cout << "Computed templates: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
+
+    //TODO implement CUDA call here
+    std::vector<cv::Mat> im_templates_temp(im_templates.size());
+    for(int i=0; i<im_templates.size(); i++)
+    {
+        im_templates_temp[i] = im_templates[i][0];
+    }
+    cv::Mat templates_vstack;
+    cv::vconcat(im_templates_temp.data(), im_templates_temp.size(), templates_vstack);
+
+    start = std::chrono::steady_clock::now();
+    double *corner_measure_cuda = first_corner_measures(reinterpret_cast<double *>(templates_vstack.data), cols, rows, directions_n, patch_size, eps);
+    end = std::chrono::steady_clock::now();
+    std::cout << "CUDA: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
+    cv::Mat corner_measure_cuda_mat(rows, cols, CV_64F, corner_measure_cuda);
+    cv::Mat points_of_interest_cuda = nonma(corner_measure_cuda_mat, threshold, nonma_radius);
 
     // cnpy::npy_save("../pred_arrays/templates.npy", reinterpret_cast<double *>(im_templates[0][0].data), {im_templates[0][0].rows, im_templates[0][0].cols}, "w");
 
@@ -168,11 +172,18 @@ cv::Mat foggdd(const cv::Mat &img)
     end = std::chrono::steady_clock::now();
     std::cout << "Iter through the first scale: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
 
+    // for(int i=0; i<3; i++)
+        // std::cout << reinterpret_cast<double *>(corner_measure.data)[255*512 + 255 + i] << " ";
+    // std::cout << "\n";
+
     start = std::chrono::steady_clock::now();
     cv::Mat points_of_interest = nonma(corner_measure, threshold, nonma_radius);
     end = std::chrono::steady_clock::now();
     std::cout << "Nonma: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
     // cnpy::npy_save("../pred_arrays/measure_nonma.npy", reinterpret_cast<double *>(corner_measure.data), {corner_measure.rows, corner_measure.cols});
+
+    double diff = cv::norm(points_of_interest, points_of_interest_cuda);
+    std::cout << "The difference between CUDA and OpenCV is: " << diff << "\n";
 
     start = std::chrono::steady_clock::now();
     for(size_t sigma_idx=1; sigma_idx < sigmas.size(); sigma_idx++)
@@ -211,16 +222,18 @@ cv::Mat foggdd(const cv::Mat &img)
     end = std::chrono::steady_clock::now();
     std::cout << "Iter through scales: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
 
+    std::vector<int> output; 
+    for(size_t point_idx=0; point_idx < points_of_interest.total(); point_idx++)
+    {
+        cv::Point point = points_of_interest.at<cv::Point>(point_idx);
+        output.push_back(point.y);
+        output.push_back(point.x);
+    }
+    cnpy::npy_save("../pred_arrays/measure_3.npy", &output[0], {output.size()});
+
     return points_of_interest;
 
-    // std::vector<int> output; 
-    // for(size_t point_idx=0; point_idx < points_of_interest.total(); point_idx++)
-    // {
-    //     cv::Point point = points_of_interest.at<cv::Point>(point_idx);
-    //     output.push_back(point.y);
-    //     output.push_back(point.x);
-    // }
-    // cnpy::npy_save("../pred_arrays/measure_3.npy", &output[0], {output.size()});
+
 }
 
 void cnpy2eigen(std::string data_fname, cv::Mat &out_mat){
