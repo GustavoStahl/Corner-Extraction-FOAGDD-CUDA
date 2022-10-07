@@ -44,9 +44,10 @@ def compute_templates(im_padded, directions_n, sigmas, rho, lattice_size):
                 anigs_direction[lattice_index] = agdd
 
             conv_filter = anigs_direction - anigs_direction.sum()/anigs_direction.size
+
             template = cv2.filter2D(im_padded, -1, cv2.flip(conv_filter,-1), borderType=cv2.BORDER_CONSTANT) 
             # template = signal.convolve2d(im_padded, conv_filter, mode='same')
-            templates[direction_idx, sigma_idx] = template    
+            templates[direction_idx, sigma_idx] = np.abs(template)
     return templates            
 
 def foggdd(_im, threshold):
@@ -100,7 +101,7 @@ def foggdd(_im, threshold):
         right = j + patch_size + 3
 
         templates_slice = templates[:, 0, top:bottom+1, left:right+1] # 8x49
-        templates_slice = np.abs(templates_slice[:, mask]) # 8x37
+        templates_slice = templates_slice[:, mask] # 8x37
         #NOTE this matrix is symmetric, thus it has real eigenvalues and eigenvectors
         mat = templates_slice @ templates_slice.T
         #NOTE approximation of: product of eigenvalues / sum of eigenvalues
@@ -121,14 +122,13 @@ def foggdd(_im, threshold):
             right = j + patch_size + 3
 
             templates_slice = templates[:, sigma_idx, top:bottom+1, left:right+1] # 8x49
-            templates_slice = np.abs(templates_slice[:, mask]) # 8x37
+            templates_slice = templates_slice[:, mask] # 8x37
             mat = templates_slice @ templates_slice.T
             corner_measure = np.linalg.det(mat) / (np.trace(mat) + eps) 
 
             poi_maintained_mask.append(corner_measure > threshold)
 
         points_of_interest = points_of_interest[poi_maintained_mask]
-
     return points_of_interest        
 
 if __name__ == "__main__":
