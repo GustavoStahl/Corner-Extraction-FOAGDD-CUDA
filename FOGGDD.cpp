@@ -13,9 +13,9 @@
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/imgproc.hpp>
 
-extern "C" double* first_corner_measures(double *im_templates, int width, int height, int directions_n, int patch_size, double eps);
+extern "C" float* first_corner_measures(float *im_templates, int width, int height, int directions_n, int patch_size, float eps);
 
-cv::Mat nonma(cv::Mat cim, double threshold, size_t radius)
+cv::Mat nonma(cv::Mat cim, float threshold, size_t radius)
 {
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(radius, radius));
     cv::Mat mx, cimmx, cimmx_nonzero;
@@ -32,35 +32,35 @@ cv::Mat nonma(cv::Mat cim, double threshold, size_t radius)
     return cimmx_nonzero;
 }
 
-std::vector<std::vector<cv::Mat>> compute_templates(const cv::Mat &im_padded, int directions_n, std::vector<double> sigmas, double rho, int lattice_size)
+std::vector<std::vector<cv::Mat>> compute_templates(const cv::Mat &im_padded, int directions_n, std::vector<float> sigmas, float rho, int lattice_size)
 {
-    Eigen::Matrix<double,2,2,Eigen::RowMajor> rho_mat {{rho, 0.0}, {0.0, 1/rho}};
-    auto lattice_xx = Eigen::RowVectorXd::LinSpaced(lattice_size, -(lattice_size/2), lattice_size/2).replicate(lattice_size,1);
-    auto lattice_yy = Eigen::VectorXd::LinSpaced(lattice_size, -(lattice_size/2), lattice_size/2).replicate(1,lattice_size);
+    Eigen::Matrix<float,2,2,Eigen::RowMajor> rho_mat {{rho, 0.0}, {0.0, 1/rho}};
+    auto lattice_xx = Eigen::RowVectorXf::LinSpaced(lattice_size, -(lattice_size/2), lattice_size/2).replicate(lattice_size,1);
+    auto lattice_yy = Eigen::VectorXf::LinSpaced(lattice_size, -(lattice_size/2), lattice_size/2).replicate(1,lattice_size);
 
     std::vector<std::vector<cv::Mat>> im_templates(directions_n, std::vector<cv::Mat>(sigmas.size()));
     for(size_t direction_idx=0; direction_idx < directions_n; direction_idx++)
     {
-        double theta = direction_idx * M_PI / directions_n;
-        Eigen::RowVector2d theta_2d {cos(theta), sin(theta)};
-        Eigen::Matrix<double,2,2,Eigen::RowMajor> R {{ cos(theta), sin(theta)}, 
+        float theta = direction_idx * M_PI / directions_n;
+        Eigen::RowVector2f theta_2d {cos(theta), sin(theta)};
+        Eigen::Matrix<float,2,2,Eigen::RowMajor> R {{ cos(theta), sin(theta)}, 
                                                      {-sin(theta), cos(theta)}};
         auto R_T = R.transpose();
 
         for(size_t sigma_idx=0; sigma_idx < sigmas.size(); sigma_idx++)
         {
-            double sigma = sigmas[sigma_idx];
+            float sigma = sigmas[sigma_idx];
 
-            Eigen::Matrix<double,Eigen::Dynamic,Eigen::Dynamic,Eigen::RowMajor> anigs_direction(lattice_size,lattice_size);
+            Eigen::Matrix<float,Eigen::Dynamic,Eigen::Dynamic,Eigen::RowMajor> anigs_direction(lattice_size,lattice_size);
 
             #pragma omp parallel for collapse(2)
             for(size_t i=0; i<lattice_size; i++)
             {
                 for(size_t j=0; j<lattice_size; j++)
                 {
-                    Eigen::Vector2d n {lattice_xx(i,j), lattice_yy(i,j)}; // [nx, ny].T
+                    Eigen::Vector2f n {lattice_xx(i,j), lattice_yy(i,j)}; // [nx, ny].T
 
-                    double agk = 1/(2 * M_PI * sigma * sigma) * exp(-1/(2 * sigma) *  n.transpose() * R_T * rho_mat * R * n);
+                    float agk = 1/(2 * M_PI * sigma * sigma) * exp(-1/(2 * sigma) *  n.transpose() * R_T * rho_mat * R * n);
                     auto agdd = -rho * theta_2d.dot(n) * agk;
 
                     anigs_direction(i,j) = agdd;
@@ -85,8 +85,8 @@ std::vector<std::vector<cv::Mat>> compute_templates(const cv::Mat &im_padded, in
 
 cv::Mat foggdd(const cv::Mat &img)
 {
-    double rho = 1.5, eps = 2.22e-16, threshold = pow(10, 8.4);
-    std::vector<double> sigmas = {1.5, 3.0, 4.5};
+    float rho = 1.5, eps = 2.22e-16, threshold = pow(10, 8.4);
+    std::vector<float> sigmas = {1.5, 3.0, 4.5};
     int directions_n = 8, nonma_radius = 5;
     int lattice_size = 31; // consider the origin in the lattice
 
@@ -96,7 +96,7 @@ cv::Mat foggdd(const cv::Mat &img)
     else
         img.copyTo(img_gray);
 
-    img_gray.convertTo(img_gray, CV_64F);
+    img_gray.convertTo(img_gray, CV_32F);
 
     int rows = img_gray.rows;
     int cols = img_gray.cols;
@@ -120,13 +120,14 @@ cv::Mat foggdd(const cv::Mat &img)
     cv::vconcat(im_templates_temp.data(), im_templates_temp.size(), templates_vstack);
 
     start = std::chrono::steady_clock::now();
-    double *corner_measure_cuda = first_corner_measures(reinterpret_cast<double *>(templates_vstack.data), cols, rows, directions_n, patch_size, eps);
+    float *corner_measure_cuda = first_corner_measures(reinterpret_cast<float *>(templates_vstack.data), cols, rows, directions_n, patch_size, eps);
     end = std::chrono::steady_clock::now();
     std::cout << "CUDA: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
-    cv::Mat corner_measure_cuda_mat(rows, cols, CV_64F, corner_measure_cuda);
+    cv::Mat corner_measure_cuda_mat(rows, cols, CV_32F, corner_measure_cuda);
     cv::Mat points_of_interest_cuda = nonma(corner_measure_cuda_mat, threshold, nonma_radius);
+    std::cout << "Points of interest found in CUDA array: " << points_of_interest_cuda.size() << "\n";
 
-    // cnpy::npy_save("../pred_arrays/templates.npy", reinterpret_cast<double *>(im_templates[0][0].data), {im_templates[0][0].rows, im_templates[0][0].cols}, "w");
+    // cnpy::npy_save("../pred_arrays/templates.npy", reinterpret_cast<float *>(im_templates[0][0].data), {im_templates[0][0].rows, im_templates[0][0].cols}, "w");
 
     cv::Mat mask = cv::Mat::ones(patch_size, patch_size, CV_8U), mask_indexes;
     mask.at<uint8_t>(0,0) = 0;
@@ -144,7 +145,7 @@ cv::Mat foggdd(const cv::Mat &img)
     cv::findNonZero(mask, mask_indexes);
     size_t mask_len = mask_indexes.total();
 
-    cv::Mat corner_measure(rows, cols, CV_64F);
+    cv::Mat corner_measure(rows, cols, CV_32F);
     start = std::chrono::steady_clock::now();
     #pragma omp parallel for collapse(2)
     for(size_t i=0; i<rows; i++)
@@ -152,35 +153,35 @@ cv::Mat foggdd(const cv::Mat &img)
         for(size_t j=0; j<cols; j++)
         {
             cv::Rect roi(j + patch_size - 3,i + patch_size - 3,patch_size,patch_size);
-            cv::Mat templates_slice(directions_n, mask_len, CV_64F);
+            cv::Mat templates_slice(directions_n, mask_len, CV_32F);
             for(size_t d=0; d<directions_n; d++)
             {
                 cv::Mat im_template = im_templates[d][0](roi);
                 for(size_t mask_i=0; mask_i < mask_len; mask_i++)
                 {
                     cv::Point point = mask_indexes.at<cv::Point>(mask_i);
-                    templates_slice.at<double>(d,mask_i) = im_template.at<double>(point);
+                    templates_slice.at<float>(d,mask_i) = im_template.at<float>(point);
                 }
             }
-            cv::Mat template_symmetric(directions_n, directions_n, CV_64F);
+            cv::Mat template_symmetric(directions_n, directions_n, CV_32F);
             //NOTE this matrix is symmetric, thus it has real eigenvalues and eigenvectors
             cv::mulTransposed(templates_slice, template_symmetric, false); // templates_slice * templates_slice.T
             //NOTE approximation of: product of eigenvalues / sum of eigenvalues
-            corner_measure.at<double>(i,j) = cv::determinant(template_symmetric) / (cv::trace(template_symmetric)[0] + eps);
+            corner_measure.at<float>(i,j) = cv::determinant(template_symmetric) / (cv::trace(template_symmetric)[0] + eps);
         }
     }
     end = std::chrono::steady_clock::now();
     std::cout << "Iter through the first scale: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
 
     // for(int i=0; i<3; i++)
-        // std::cout << reinterpret_cast<double *>(corner_measure.data)[255*512 + 255 + i] << " ";
+        // std::cout << reinterpret_cast<float *>(corner_measure.data)[255*512 + 255 + i] << " ";
     // std::cout << "\n";
 
     start = std::chrono::steady_clock::now();
     cv::Mat points_of_interest = nonma(corner_measure, threshold, nonma_radius);
     end = std::chrono::steady_clock::now();
     std::cout << "Nonma: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
-    // cnpy::npy_save("../pred_arrays/measure_nonma.npy", reinterpret_cast<double *>(corner_measure.data), {corner_measure.rows, corner_measure.cols});
+    // cnpy::npy_save("../pred_arrays/measure_nonma.npy", reinterpret_cast<float *>(corner_measure.data), {corner_measure.rows, corner_measure.cols});
 
     double diff = cv::norm(points_of_interest, points_of_interest_cuda);
     std::cout << "The difference between CUDA and OpenCV is: " << diff << "\n";
@@ -197,21 +198,21 @@ cv::Mat foggdd(const cv::Mat &img)
             int y = i + patch_size - 3, x = j + patch_size - 3;
 
             cv::Rect roi(x,y,patch_size,patch_size);
-            cv::Mat templates_slice(directions_n, mask_len, CV_64F);
+            cv::Mat templates_slice(directions_n, mask_len, CV_32F);
             for(size_t d=0; d<directions_n; d++)
             {
                 cv::Mat im_template = im_templates[d][sigma_idx](roi);
                 for(size_t mask_i=0; mask_i < mask_len; mask_i++)
                 {
                     cv::Point point = mask_indexes.at<cv::Point>(mask_i);
-                    templates_slice.at<double>(d,mask_i) = im_template.at<double>(point);
+                    templates_slice.at<float>(d,mask_i) = im_template.at<float>(point);
                 }
             }
-            cv::Mat template_symmetric(directions_n, directions_n, CV_64F);
+            cv::Mat template_symmetric(directions_n, directions_n, CV_32F);
             //NOTE this matrix is symmetric, thus it has real eigenvalues and eigenvectors
             cv::mulTransposed(templates_slice, template_symmetric, false); // templates_slice * templates_slice.T
             //NOTE approximation of: product of eigenvalues / sum of eigenvalues
-            double measure = cv::determinant(template_symmetric) / (cv::trace(template_symmetric)[0] + eps);   
+            float measure = cv::determinant(template_symmetric) / (cv::trace(template_symmetric)[0] + eps);   
             if (measure > threshold)
             {
                 points_of_interest_filtered.push_back(point);
