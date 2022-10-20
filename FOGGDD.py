@@ -19,14 +19,14 @@ def nonma(cim, threshold, radius):
     cimmx = t & t2 & bordermask
     return np.transpose(cimmx.nonzero())
 
-def compute_templates(im_padded, directions_n, sigmas, rho, lattice_size):    
+def compute_templates(image, directions_n, sigmas, rho, lattice_size):    
     rho_mat = np.array([rho, 0, 0, 1/rho]).reshape(2,2)
 
     lattice_axis = np.arange(-(lattice_size//2), lattice_size//2+1, dtype=int)
     lattice_xx, lattice_yy = np.meshgrid(lattice_axis, lattice_axis, indexing="ij")
     lattice = np.concatenate((np.expand_dims(lattice_xx, -1), np.expand_dims(lattice_yy,-1)), axis=-1)
 
-    templates = np.empty((directions_n, len(sigmas), *im_padded.shape[:2]), dtype=float)
+    templates = np.empty((directions_n, len(sigmas), *image.shape[:2]), dtype=float)
     for direction_idx in range(directions_n):
         theta = direction_idx * np.pi / directions_n
         R = np.array([np.cos(theta), np.sin(theta), -np.sin(theta), np.cos(theta)]).reshape(2,2)
@@ -45,7 +45,7 @@ def compute_templates(im_padded, directions_n, sigmas, rho, lattice_size):
 
             conv_filter = anigs_direction - anigs_direction.sum()/anigs_direction.size
 
-            template = cv2.filter2D(im_padded, -1, cv2.flip(conv_filter,-1), borderType=cv2.BORDER_CONSTANT) 
+            template = cv2.filter2D(image, -1, cv2.flip(conv_filter,-1), borderType=cv2.BORDER_CONSTANT) 
             # template = signal.convolve2d(im_padded, conv_filter, mode='same')
             templates[direction_idx, sigma_idx] = np.abs(template)
     return templates            
