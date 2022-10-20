@@ -13,7 +13,8 @@
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/imgproc.hpp>
 
-extern "C" float* first_corner_measures(float *im_templates, int width, int height, int directions_n, int patch_size, float eps);
+extern "C" float* first_corner_measures(float *im_templates, size_t width, size_t height, size_t directions_n, size_t patch_size, float eps);
+extern "C" int init_cuda_device(int argc, const char **argv);
 
 cv::Mat nonma(cv::Mat cim, float threshold, size_t radius)
 {
@@ -114,13 +115,17 @@ cv::Mat foggdd(const cv::Mat &img)
     std::vector<cv::Mat> im_templates_temp(im_templates.size());
     for(int i=0; i<im_templates.size(); i++)
     {
-        im_templates_temp[i] = im_templates[i][0];
+        im_templates_temp[i] = im_templates[i][0](cv::Rect(patch_size, patch_size, rows, cols));
     }
     cv::Mat templates_vstack;
     cv::vconcat(im_templates_temp.data(), im_templates_temp.size(), templates_vstack);
 
     start = std::chrono::steady_clock::now();
-    float *corner_measure_cuda = first_corner_measures(reinterpret_cast<float *>(templates_vstack.data), cols, rows, directions_n, patch_size, eps);
+    float *corner_measure_cuda = first_corner_measures(reinterpret_cast<float *>(templates_vstack.data), 
+                                                       (size_t)cols, 
+                                                       (size_t)rows, 
+                                                       (size_t)directions_n, 
+                                                       (size_t)patch_size, eps);
     end = std::chrono::steady_clock::now();
     std::cout << "CUDA: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
     cv::Mat corner_measure_cuda_mat(rows, cols, CV_32F, corner_measure_cuda);
@@ -246,10 +251,12 @@ void cnpy2eigen(std::string data_fname, cv::Mat &out_mat){
     out_mat = cv::Mat(data_col, data_row, CV_8U, ptr); // CV_64F is equivalent double
 }
 
-int main(int argc, char **argv)
+int main(int argc, const char **argv)
 {
     Eigen::initParallel();
     std::cout << "Eigen will be using: " << Eigen::nbThreads() << " threads\n";
+
+    init_cuda_device(argc, argv);
 
     cv::Mat img = cv::imread("../17.bmp");
     cv::Mat points_of_interest;
@@ -267,8 +274,11 @@ int main(int argc, char **argv)
         cv::Point point = points_of_interest.at<cv::Point>(point_idx);
         cv::drawMarker(img, point, cv::Scalar(0,0,255), cv::MARKER_SQUARE, 2, 1, cv::LINE_AA);
     }
-    cv::namedWindow("jonas", 0);
-    cv::imshow("jonas", img);
-    cv::waitKey(0);
-    cv::destroyAllWindows();
+
+    cv::imwrite("../result.jpg", img);
+
+    // cv::namedWindow("jonas", 0);
+    // cv::imshow("jonas", img);
+    // cv::waitKey(0);
+    // cv::destroyAllWindows();
 }
