@@ -22,3 +22,6 @@ target_link_libraries( FOGGDD ${OpenCV_LIBS} cnpy OpenMP::OpenMP_CXX CUDA::nppc 
 # This line of code will generate a binary optimized to my CUDA architecture (Pascal).
 # Depending on the GPU, this should be changed
 set_target_properties(FOGGDD PROPERTIES CUDA_ARCHITECTURES "61")
+
+add_executable( FOGGDD_cpu FOGGDD_cpu.cpp )
+target_link_libraries( FOGGDD_cpu ${OpenCV_LIBS} cnpy OpenMP::OpenMP_CXX )
