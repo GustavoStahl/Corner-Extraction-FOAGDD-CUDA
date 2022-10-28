@@ -2,57 +2,84 @@
 #include <iostream>
 #include "helper_cuda.h"
 
-#define DIRECTIONS_N 8
-#define MASK_LEN 37
+#define DIRECTIONS_MAX 8
+#define FILTER_MAX 7
 #define BLOCK_SIZE 32
 
-__device__ float determinant(const float matrix[], const size_t rank)
-{
-    float ratio, det=1.0;
+/* 
+   ##.##
+   #...#
+   ..... = 12 corners
+   #...#
+   ##.## 
+*/
+#define CORNER_NUM 12
+#define MASK_MAX FILTER_MAX*FILTER_MAX - CORNER_NUM
 
-    float triang_mat[DIRECTIONS_N*DIRECTIONS_N];
-    for(size_t i=0; i<rank*rank; i++)
-        triang_mat[i] = matrix[i];
+__device__ float determinant(const float matrix[][DIRECTIONS_MAX], const size_t rank)
+{
+    float ratio, det=1.f;
+
+    float triang_mat[DIRECTIONS_MAX][DIRECTIONS_MAX];
+    for(size_t i=0; i<rank; i++)
+        for(size_t j=0; j<rank; j++)
+            triang_mat[i][j] = matrix[i][j];
 
     for(size_t i=0; i<rank; i++)
     {
-         if(triang_mat[i*rank + i] == 0.0)
-         {
-              printf("Mathematical Error!");
-         }
-         for(size_t j=i+1; j< rank; j++)
-         {
-              ratio = triang_mat[j*rank+i]/triang_mat[i*rank+i];
+        // if(triang_mat[i][i] == 0.0) {printf("Mathematical Error!");}
+        
+        for(size_t j=i+1; j<rank; j++)
+        {
+            ratio = triang_mat[j][i]/triang_mat[i][i];
 
-              for(size_t k=0; k< rank; k++)
-              {
-                     triang_mat[j*rank + k] = triang_mat[j*rank + k] - ratio*triang_mat[i*rank + k];
-              }
-         }
+            for(size_t k=0; k<rank; k++)
+            {
+                triang_mat[j][k] = triang_mat[j][k] - ratio*triang_mat[i][k];
+            }
+        }
     }
 
-    for(size_t i=0; i< rank; i++)
+    for(size_t i=0; i<rank; i++)
     {
-        det *= triang_mat[i*rank + i];
+        det *= triang_mat[i][i];
     }
 
     return det;
 }
 
-__device__ float trace(const float matrix[], const size_t rank)
+__device__ float trace(const float matrix[][DIRECTIONS_MAX], const size_t rank)
 {
-    float sum_fdiag=0.0;
+    float sum_fdiag=0.f;
 
     // Iter through the first diagonal
     for(size_t i=0; i<rank; i++)
     {
-        sum_fdiag += matrix[i*rank + i];
+        sum_fdiag += matrix[i][i];
     }
 
     return sum_fdiag;
 }
 
-__global__ void d_first_corner_measures(const float* im_templates, 
+__constant__ size_t skip_idxes[CORNER_NUM];
+__device__ bool is_skipable(const size_t idx)
+{
+    #pragma unroll
+    for(size_t i=0; i<CORNER_NUM; i++)
+        if(skip_idxes[i] == idx)
+            return true;
+    return false;
+}
+
+/* possible overhead: 
+   * not enough registers 
+   * uncoalesced memory access
+   * unsufficient streaming multiprocessor warps
+*/
+
+__global__ void 
+__launch_bounds__(BLOCK_SIZE*BLOCK_SIZE)
+d_first_corner_measures(const float* im_templates, 
                                         const size_t im_templates_pitch,
                                         float* corner_measure,
                                         const size_t corner_measure_pitch,
@@ -61,7 +88,7 @@ __global__ void d_first_corner_measures(const float* im_templates,
                                         const size_t directions_n, 
                                         const size_t filter_size, 
                                         const float eps)
-{
+{    
     const size_t padding_size = filter_size/2; // floor division
     const size_t padding_size_twice = filter_size - 1;
 
@@ -96,15 +123,9 @@ __global__ void d_first_corner_measures(const float* im_templates,
     bool is_padding = col_local_shifted < 0 || col_local_shifted >= blockDim.x - (ptrdiff_t)padding_size_twice || 
                       row_local_shifted < 0 || row_local_shifted >= blockDim.y - (ptrdiff_t)padding_size_twice;
       
-    // const size_t mask_len = filter_size*filter_size - 12; //TODO fix this
-    // 0, 1, 5, 6, 7, 13, 35, 41, 42, 43, 47, 48
-    // int skip_idxs[12] = {0, 1, filter_size-2, 
-    //                      filter_size-1, filter_size, 2*filter_size-1, 
-    //                      filter_size*(filter_size-2), filter_size*(filter_size-1)-1, filter_size*(filter_size-1),
-    //                      filter_size*(filter_size-1)+1, filter_size*filter_size-2, filter_size*filter_size-1
-    //                     };
+    const size_t mask_len = filter_size*filter_size - CORNER_NUM; 
 
-    float templates_slice[DIRECTIONS_N * MASK_LEN];   
+    float templates_slice[DIRECTIONS_MAX][MASK_MAX];   
 
     for(size_t direction_idx = 0; direction_idx < directions_n; direction_idx++)
     {
@@ -125,17 +146,12 @@ __global__ void d_first_corner_measures(const float* im_templates,
                 {
                     const size_t mask_idx_curr = pad_row * filter_size + pad_col;
     
-                    if(mask_idx_curr == 0 || mask_idx_curr == 1 || mask_idx_curr == 5 || 
-                       mask_idx_curr == 6 || mask_idx_curr == 7 || mask_idx_curr == 13 || 
-                       mask_idx_curr == 35 || mask_idx_curr == 41 || mask_idx_curr == 42 || 
-                       mask_idx_curr == 43 || mask_idx_curr == 47 || mask_idx_curr == 48) 
+                    if(is_skipable(mask_idx_curr)) 
                        continue;
     
                     const size_t curr_col = col_local_shifted + pad_col;
-                    
-                    const size_t template_slice_idx = direction_idx * MASK_LEN + mask_count;
-   
-                    templates_slice[template_slice_idx] = im_template_shr[curr_row][curr_col];
+                       
+                    templates_slice[direction_idx][mask_count] = im_template_shr[curr_row][curr_col];
     
                     mask_count++;
                 }
@@ -148,16 +164,16 @@ __global__ void d_first_corner_measures(const float* im_templates,
         return;
 
     // Matrix multiplication
-    float template_symmetric[DIRECTIONS_N * DIRECTIONS_N];
+    float template_symmetric[DIRECTIONS_MAX][DIRECTIONS_MAX];
     for (size_t i = 0; i < directions_n; i++) 
     {
         for (size_t j = 0; j < directions_n; j++) 
         {
-            template_symmetric[i*directions_n + j] = 0.f;
-            for (size_t k = 0; k < MASK_LEN; k++)
+            template_symmetric[i][j] = 0.f;
+            for (size_t k = 0; k < mask_len; k++)
             {
                 // Equivalent to A @ A.T
-                template_symmetric[i*directions_n + j] += templates_slice[i*MASK_LEN + k] * templates_slice[j*MASK_LEN + k];
+                template_symmetric[i][j] += templates_slice[i][k] * templates_slice[j][k];
             }
         }
     }
@@ -202,6 +218,15 @@ int init_cuda_device(int argc, const char **argv)
     return dev;
 }
 
+void update_skip_idxes(size_t filter_size)
+{
+    size_t h_skip_idxes[] = {0, 1, filter_size-2, 
+                             filter_size-1, filter_size, 2*filter_size-1, 
+                             filter_size*(filter_size-2), filter_size*(filter_size-1)-1, filter_size*(filter_size-1),
+                             filter_size*(filter_size-1)+1, filter_size*filter_size-2, filter_size*filter_size-1};    
+    checkCudaErrors(cudaMemcpyToSymbol(skip_idxes, h_skip_idxes, sizeof(size_t)*CORNER_NUM));
+}
+
 /*
 im_templates size: directions_n x width x height (flatten)
 */
@@ -213,6 +238,8 @@ float* first_corner_measures(const float *im_templates,
                              const size_t filter_size, 
                              const float eps)
 {
+    update_skip_idxes(filter_size);
+
     size_t d_im_templates_pitch, d_corner_measures_pitch;
 
     float *d_im_templates, *d_corner_measures, *h_corner_measures;
@@ -221,14 +248,13 @@ float* first_corner_measures(const float *im_templates,
                                      &d_im_templates_pitch, 
                                      sizeof(float) * width, 
                                      height * directions_n));
-
-    checkCudaErrors(cudaMemcpy2DAsync(d_im_templates, 
-                                      d_im_templates_pitch, 
-                                      im_templates, 
-                                      sizeof(float)*width, 
-                                      sizeof(float)*width, 
-                                      height * directions_n, 
-                                      cudaMemcpyHostToDevice));  
+    checkCudaErrors(cudaMemcpy2D(d_im_templates, 
+                                 d_im_templates_pitch, 
+                                 im_templates, 
+                                 sizeof(float)*width, 
+                                 sizeof(float)*width, 
+                                 height * directions_n, 
+                                 cudaMemcpyHostToDevice));  
                                       
     checkCudaErrors(cudaMallocPitch(&d_corner_measures, 
                                     &d_corner_measures_pitch, 
