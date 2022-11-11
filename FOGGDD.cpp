@@ -1,20 +1,17 @@
 #include <stdio.h>
-#include <cuda.h>
 #include <math.h>
 #include <chrono>
 #include <vector>
 
-#include <cuda_runtime.h>
-#include <npp.h>
-
-#include "cnpy/cnpy.h"
 #include <Eigen/Dense>
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/imgproc.hpp>
 
-extern "C" float* first_corner_measures(float *im_templates, size_t width, size_t height, size_t directions_n, size_t patch_size, float eps);
 extern "C" int init_cuda_device(int argc, const char **argv);
+extern "C" float* first_corner_measures(float *im_templates, size_t width, size_t height, size_t directions_n, size_t patch_size, float eps);
+extern "C" float* set_filter_src_image(const float *h_pSrc, const int width, const int height,int &nSrcStep);
+extern "C" float* compute_templates(float* pSrc, const int pSrcStep, const int width,  const int height,  const float *conv_filter,  const int filter_size);
 
 cv::Mat nonma(cv::Mat cim, float threshold, size_t radius)
 {
@@ -33,13 +30,16 @@ cv::Mat nonma(cv::Mat cim, float threshold, size_t radius)
     return cimmx_nonzero;
 }
 
-std::vector<std::vector<cv::Mat>> compute_templates(const cv::Mat &im_padded, int directions_n, std::vector<float> sigmas, float rho, int lattice_size)
+std::vector<std::vector<cv::Mat>> compute_filters(int directions_n, 
+                                                  std::vector<float> sigmas, 
+                                                  float rho, 
+                                                  int lattice_size)
 {
     Eigen::Matrix<float,2,2,Eigen::RowMajor> rho_mat {{rho, 0.0}, {0.0, 1/rho}};
     auto lattice_xx = Eigen::RowVectorXf::LinSpaced(lattice_size, -(lattice_size/2), lattice_size/2).replicate(lattice_size,1);
     auto lattice_yy = Eigen::VectorXf::LinSpaced(lattice_size, -(lattice_size/2), lattice_size/2).replicate(1,lattice_size);
 
-    std::vector<std::vector<cv::Mat>> im_templates(directions_n, std::vector<cv::Mat>(sigmas.size()));
+    std::vector<std::vector<cv::Mat>> im_filters(directions_n, std::vector<cv::Mat>(sigmas.size()));
     for(size_t direction_idx=0; direction_idx < directions_n; direction_idx++)
     {
         float theta = direction_idx * M_PI / directions_n;
@@ -70,13 +70,51 @@ std::vector<std::vector<cv::Mat>> compute_templates(const cv::Mat &im_padded, in
             anigs_direction.array() -= anigs_direction.sum() / anigs_direction.size();
             anigs_direction.transposeInPlace(); //TODO check how to remove this
 
-            cv::Mat conv_filter, im_template;
+            cv::Mat conv_filter;
             cv::eigen2cv(anigs_direction, conv_filter);
 
             cv::flip(conv_filter,conv_filter,-1);
 
-            cv::filter2D(im_padded, im_template, -1, conv_filter, cv::Point(-1,-1), 0, cv::BORDER_CONSTANT);
-            cv::absdiff(im_template, cv::Scalar::all(0), im_template);
+            im_filters[direction_idx][sigma_idx] = conv_filter; 
+        }
+    }
+    return im_filters;
+}
+
+std::vector<std::vector<cv::Mat>> compute_templates(cv::Mat& im_gray, int patch_size, std::vector<std::vector<cv::Mat>> im_filters)
+{
+    cv::Mat im_padded;
+    cv::copyMakeBorder(im_gray, im_padded, patch_size, patch_size, patch_size, patch_size, cv::BORDER_REFLECT);
+
+    int im_padded_step;
+    float* im_padded_gpu = set_filter_src_image(reinterpret_cast<float*>(im_padded.data), 
+                                                im_padded.cols, 
+                                                im_padded.rows,
+                                                im_padded_step);
+
+    size_t directions_n = im_filters.size(), sigmas_n = im_filters[0].size();
+
+    std::vector<std::vector<cv::Mat>> im_templates(directions_n, std::vector<cv::Mat>(sigmas_n));
+
+    for(size_t direction_idx=0; direction_idx < directions_n; direction_idx++)
+    {
+        for(size_t sigma_idx=0; sigma_idx < sigmas_n; sigma_idx++)
+        {
+            cv::Mat conv_filter = im_filters[direction_idx][sigma_idx];
+
+            // auto start = std::chrono::steady_clock::now();
+            float* im_template_ptr = compute_templates(im_padded_gpu,
+                                                       im_padded_step,
+                                                       im_padded.cols, 
+                                                       im_padded.rows, 
+                                                       reinterpret_cast<float*>(conv_filter.data),
+                                                       conv_filter.rows);
+            // auto end = std::chrono::steady_clock::now();
+            // std::cout << "template CUDA: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
+
+            cv::Mat im_template = cv::Mat(im_padded.rows, im_padded.cols, CV_32F, im_template_ptr);
+            cv::absdiff(im_template, cv::Scalar::all(0), im_template);    
+
             im_templates[direction_idx][sigma_idx] = im_template; 
         }
     }
@@ -103,15 +141,17 @@ cv::Mat foggdd(const cv::Mat &img)
     int cols = img_gray.cols;
 
     int patch_size = 7;
-    cv::Mat im_padded;
-    cv::copyMakeBorder(img_gray, im_padded, patch_size, patch_size, patch_size, patch_size, cv::BORDER_REFLECT);
 
     auto start = std::chrono::steady_clock::now();
-    std::vector<std::vector<cv::Mat>> im_templates = compute_templates(im_padded, directions_n, sigmas, rho, lattice_size);
+    std::vector<std::vector<cv::Mat>> im_filters = compute_filters(directions_n,sigmas,rho,lattice_size);
     auto end = std::chrono::steady_clock::now();
-    std::cout << "Computed templates: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
+    std::cout << "Compute filters: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
 
-    //TODO implement CUDA call here
+    start = std::chrono::steady_clock::now();
+    std::vector<std::vector<cv::Mat>> im_templates = compute_templates(img_gray, patch_size, im_filters);
+    end = std::chrono::steady_clock::now();
+    std::cout << "Compute templates: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
+
     std::vector<cv::Mat> im_templates_temp(im_templates.size());
     for(int i=0; i<im_templates.size(); i++)
     {
@@ -121,18 +161,17 @@ cv::Mat foggdd(const cv::Mat &img)
     cv::vconcat(im_templates_temp.data(), im_templates_temp.size(), templates_vstack);
 
     start = std::chrono::steady_clock::now();
-    float *corner_measure_cuda = first_corner_measures(reinterpret_cast<float *>(templates_vstack.data), 
-                                                       (size_t)cols, 
-                                                       (size_t)rows, 
-                                                       (size_t)directions_n, 
-                                                       (size_t)patch_size, eps);
+    float *corner_measure_ptr = first_corner_measures(reinterpret_cast<float *>(templates_vstack.data), 
+                                                      (size_t)cols, 
+                                                      (size_t)rows, 
+                                                      (size_t)directions_n, 
+                                                      (size_t)patch_size, 
+                                                      eps);
     end = std::chrono::steady_clock::now();
     std::cout << "CUDA: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
-    cv::Mat corner_measure_cuda_mat(rows, cols, CV_32F, corner_measure_cuda);
-    cv::Mat points_of_interest_cuda = nonma(corner_measure_cuda_mat, threshold, nonma_radius);
-    std::cout << "Points of interest found in CUDA array: " << points_of_interest_cuda.size() << "\n";
-
-    // cnpy::npy_save("../pred_arrays/templates.npy", reinterpret_cast<float *>(im_templates[0][0].data), {im_templates[0][0].rows, im_templates[0][0].cols}, "w");
+    cv::Mat corner_measure_cuda_mat(rows, cols, CV_32F, corner_measure_ptr);
+    cv::Mat points_of_interest = nonma(corner_measure_cuda_mat, threshold, nonma_radius);
+    std::cout << "Points of interest found in CUDA array: " << points_of_interest.size() << "\n";
 
     cv::Mat mask = cv::Mat::ones(patch_size, patch_size, CV_8U), mask_indexes;
     mask.at<uint8_t>(0,0) = 0;
@@ -149,47 +188,6 @@ cv::Mat foggdd(const cv::Mat &img)
     mask.at<uint8_t>(patch_size-1,patch_size-2) = 0;
     cv::findNonZero(mask, mask_indexes);
     size_t mask_len = mask_indexes.total();
-
-    cv::Mat corner_measure(rows, cols, CV_32F);
-    start = std::chrono::steady_clock::now();
-    #pragma omp parallel for collapse(2)
-    for(size_t i=0; i<rows; i++)
-    {
-        for(size_t j=0; j<cols; j++)
-        {
-            cv::Rect roi(j + patch_size - 3,i + patch_size - 3,patch_size,patch_size);
-            cv::Mat templates_slice(directions_n, mask_len, CV_32F);
-            for(size_t d=0; d<directions_n; d++)
-            {
-                cv::Mat im_template = im_templates[d][0](roi);
-                for(size_t mask_i=0; mask_i < mask_len; mask_i++)
-                {
-                    cv::Point point = mask_indexes.at<cv::Point>(mask_i);
-                    templates_slice.at<float>(d,mask_i) = im_template.at<float>(point);
-                }
-            }
-            cv::Mat template_symmetric(directions_n, directions_n, CV_32F);
-            //NOTE this matrix is symmetric, thus it has real eigenvalues and eigenvectors
-            cv::mulTransposed(templates_slice, template_symmetric, false); // templates_slice * templates_slice.T
-            //NOTE approximation of: product of eigenvalues / sum of eigenvalues
-            corner_measure.at<float>(i,j) = cv::determinant(template_symmetric) / (cv::trace(template_symmetric)[0] + eps);
-        }
-    }
-    end = std::chrono::steady_clock::now();
-    std::cout << "Iter through the first scale: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
-
-    // for(int i=0; i<3; i++)
-        // std::cout << reinterpret_cast<float *>(corner_measure.data)[255*512 + 255 + i] << " ";
-    // std::cout << "\n";
-
-    start = std::chrono::steady_clock::now();
-    cv::Mat points_of_interest = nonma(corner_measure, threshold, nonma_radius);
-    end = std::chrono::steady_clock::now();
-    std::cout << "Nonma: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
-    // cnpy::npy_save("../pred_arrays/measure_nonma.npy", reinterpret_cast<float *>(corner_measure.data), {corner_measure.rows, corner_measure.cols});
-
-    double diff = cv::norm(points_of_interest, points_of_interest_cuda);
-    std::cout << "The difference between CUDA and OpenCV is: " << diff << "\n";
 
     start = std::chrono::steady_clock::now();
     for(size_t sigma_idx=1; sigma_idx < sigmas.size(); sigma_idx++)
@@ -235,20 +233,8 @@ cv::Mat foggdd(const cv::Mat &img)
         output.push_back(point.y);
         output.push_back(point.x);
     }
-    cnpy::npy_save("../pred_arrays/measure_3.npy", &output[0], {output.size()});
 
     return points_of_interest;
-
-
-}
-
-void cnpy2eigen(std::string data_fname, cv::Mat &out_mat){
-    cnpy::NpyArray npy_data = cnpy::npy_load(data_fname);
-    int data_row = npy_data.shape[0];
-    int data_col = npy_data.shape[1];
-    double* ptr = static_cast<double *>(malloc(data_row * data_col * sizeof(double)));
-    memcpy(ptr, npy_data.data<double>(), data_row * data_col * sizeof(double));
-    out_mat = cv::Mat(data_col, data_row, CV_8U, ptr); // CV_64F is equivalent double
 }
 
 int main(int argc, const char **argv)
@@ -258,13 +244,11 @@ int main(int argc, const char **argv)
 
     init_cuda_device(argc, argv);
 
-    cv::Mat img = cv::imread("../17.bmp");
+    cv::Mat img = cv::imread("../data/17.bmp");
     cv::Mat points_of_interest;
 
-    cv::Mat corner_measure;
-    cnpy2eigen("../gt_arrays/measure_nonma.npy", corner_measure);
-
     auto start = std::chrono::steady_clock::now();
+    // for(size_t i=0; i<5; i++)
     points_of_interest = foggdd(img);
     auto end = std::chrono::steady_clock::now();
     std::cout << "Elapsed time in milliseconds: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
@@ -275,7 +259,7 @@ int main(int argc, const char **argv)
         cv::drawMarker(img, point, cv::Scalar(0,0,255), cv::MARKER_SQUARE, 2, 1, cv::LINE_AA);
     }
 
-    cv::imwrite("../result.jpg", img);
+    cv::imwrite("../data/result.jpg", img);
 
     // cv::namedWindow("jonas", 0);
     // cv::imshow("jonas", img);

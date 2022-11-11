@@ -221,7 +221,7 @@ int main(int argc, char **argv)
     Eigen::initParallel();
     std::cout << "Eigen will be using: " << Eigen::nbThreads() << " threads\n";
 
-    cv::Mat img = cv::imread("../17.bmp");
+    cv::Mat img = cv::imread("../data/17.bmp");
     cv::Mat points_of_interest;
 
     cv::Mat corner_measure;

@@ -1,10 +1,13 @@
 #include <stdio.h>
 #include <iostream>
+#include <npp.h>
+
 #include "helper_cuda.h"
+#include "helper_npp.h"
 
 #define DIRECTIONS_MAX 8
 #define FILTER_MAX 7
-#define BLOCK_SIZE 32
+#define BLOCK_SIZE 25
 
 /* 
    ##.##
@@ -66,8 +69,12 @@ __device__ bool is_skipable(const size_t idx)
 {
     #pragma unroll
     for(size_t i=0; i<CORNER_NUM; i++)
+    {
         if(skip_idxes[i] == idx)
+        {
             return true;
+        }
+    }
     return false;
 }
 
@@ -78,16 +85,16 @@ __device__ bool is_skipable(const size_t idx)
 */
 
 __global__ void 
-__launch_bounds__(BLOCK_SIZE*BLOCK_SIZE)
+__launch_bounds__(BLOCK_SIZE*BLOCK_SIZE, 3)
 d_first_corner_measures(const float* im_templates, 
-                                        const size_t im_templates_pitch,
-                                        float* corner_measure,
-                                        const size_t corner_measure_pitch,
-                                        const size_t width, 
-                                        const size_t height, 
-                                        const size_t directions_n, 
-                                        const size_t filter_size, 
-                                        const float eps)
+                        const size_t im_templates_pitch,
+                        float* corner_measure,
+                        const size_t corner_measure_pitch,
+                        const size_t width, 
+                        const size_t height, 
+                        const size_t directions_n, 
+                        const size_t filter_size, 
+                        const float eps)
 {    
     const size_t padding_size = filter_size/2; // floor division
     const size_t padding_size_twice = filter_size - 1;
@@ -108,17 +115,14 @@ d_first_corner_measures(const float* im_templates,
     bool is_padding_zeros = col_global_shifted < 0 || col_global_shifted >= (ptrdiff_t)width || 
                             row_global_shifted < 0 || row_global_shifted >= (ptrdiff_t)height;
 
-    const size_t col_local = threadIdx.x;
-    const size_t row_local = threadIdx.y;
-
     if (is_padding_zeros) 
     {
-        im_template_shr[row_local][col_local] = 0.f;
+        im_template_shr[threadIdx.y][threadIdx.x] = 0.f;
         return;
     }       
 
-    const ptrdiff_t col_local_shifted = (ptrdiff_t)col_local - (ptrdiff_t)padding_size;
-    const ptrdiff_t row_local_shifted = (ptrdiff_t)row_local - (ptrdiff_t)padding_size;    
+    const ptrdiff_t col_local_shifted = threadIdx.x - (ptrdiff_t)padding_size;
+    const ptrdiff_t row_local_shifted = threadIdx.y - (ptrdiff_t)padding_size;    
 
     bool is_padding = col_local_shifted < 0 || col_local_shifted >= blockDim.x - (ptrdiff_t)padding_size_twice || 
                       row_local_shifted < 0 || row_local_shifted >= blockDim.y - (ptrdiff_t)padding_size_twice;
@@ -129,10 +133,9 @@ d_first_corner_measures(const float* im_templates,
 
     for(size_t direction_idx = 0; direction_idx < directions_n; direction_idx++)
     {
-        const size_t row_offset = direction_idx * height;
 
-        float val = *((float*)((char*)im_templates + (row_offset + row_global_shifted) * im_templates_pitch) + col_global_shifted);
-        im_template_shr[row_local][col_local] = val;
+        float val = *((float*)((char*)im_templates + (direction_idx * height + row_global_shifted) * im_templates_pitch) + col_global_shifted);
+        im_template_shr[threadIdx.y][threadIdx.x] = val;
 
         __syncthreads();    
 
@@ -185,9 +188,91 @@ d_first_corner_measures(const float* im_templates,
     corner_measure_row[col_global_shifted] = det / (trc + eps);
 }
 
+// __device__ Npp32s nSrcStep;
+// __device__ Npp32f *pSrc;
+
 extern "C"
-void compute_templates()
+float* set_filter_src_image(const float *h_pSrc, 
+                            const int width, 
+                            const int height,
+                            int &nSrcStep)
 {
+    // Npp32s nSrcStep_tmp;
+    Npp32f *d_pSrc;
+
+    d_pSrc = nppiMalloc_32f_C1(width, height, &nSrcStep); 
+    checkCudaErrors(cudaMemcpy2D(d_pSrc, 
+                                 nSrcStep, 
+                                 h_pSrc, 
+                                 sizeof(float)*width, 
+                                 sizeof(float)*width, 
+                                 height, 
+                                 cudaMemcpyHostToDevice));   
+
+    return d_pSrc;                                 
+                                 
+    // checkCudaErrors(cudaMemcpyToSymbol(pSrc, pSrc_tmp, width*height*nSrcStep_tmp, 0, cudaMemcpyDeviceToDevice));
+    // checkCudaErrors(cudaMemcpyToSymbol(&nSrcStep, &nSrcStep_tmp, sizeof(Npp32s), 0, cudaMemcpyDeviceToDevice));
+}
+
+extern "C"
+float* compute_templates(float* pSrc,
+                         const int pSrcStep,
+                         const int width, 
+                         const int height, 
+                         const float *conv_filter, 
+                         const int filter_size)
+{
+    Npp32s nDstStep;
+
+    Npp32f *pDst, *pKernel;
+    float* im_template;                               
+
+    cudaMalloc((void**)&pKernel, sizeof(Npp32f)*filter_size*filter_size);
+    cudaMemcpy(pKernel, conv_filter, sizeof(Npp32f)*filter_size*filter_size, cudaMemcpyHostToDevice);
+
+    pDst = nppiMalloc_32f_C1(width, height, &nDstStep); 
+
+    checkCudaErrors(cudaMallocHost(&im_template, sizeof(float) * width * height));
+
+    NppiSize oSrcSize = {width, height};
+    NppiPoint oSrcOffset = {0, 0};
+    NppiSize oSizeROI = {width, height};
+    NppiSize oKernelSize = {filter_size, filter_size};
+    NppiPoint oAnchor = {filter_size/2, filter_size/2};
+
+    // Npp32s nSrcStep_val;
+    // Npp32f *pSrc_ptr;
+    // checkCudaErrors(cudaMemcpyFromSymbol(&nSrcStep_val, nSrcStep, sizeof(Npp32s)));
+    // checkCudaErrors(cudaGetSymbolAddress((void**)&pSrc_ptr, pSrc));
+
+    NPP_CHECK_NPP(nppiFilterBorder_32f_C1R(pSrc, 
+                                           pSrcStep,
+                                           oSrcSize,
+                                           oSrcOffset,
+                                           pDst,
+                                           nDstStep,
+                                           oSizeROI,
+                                           pKernel,
+                                           oKernelSize,
+                                           oAnchor,
+                                           NPP_BORDER_REPLICATE));
+
+    // NPP_CHECK_NPP(nppiAbs_32f_C1R(pDst, nDstStep, pDst, nDstStep, oSizeROI));
+                             
+    checkCudaErrors(cudaMemcpy2D(im_template, 
+                                 sizeof(float)*width, 
+                                 pDst, 
+                                 nDstStep, 
+                                 sizeof(Npp32f)*width, 
+                                 height, 
+                                 cudaMemcpyDeviceToHost)); 
+
+    // nppiFree(pSrc);
+    nppiFree(pDst);
+    nppiFree(pKernel);
+
+    return im_template;                                    
 }
 
 extern "C"
@@ -245,9 +330,9 @@ float* first_corner_measures(const float *im_templates,
     float *d_im_templates, *d_corner_measures, *h_corner_measures;
 
     checkCudaErrors(cudaMallocPitch(&d_im_templates, 
-                                     &d_im_templates_pitch, 
-                                     sizeof(float) * width, 
-                                     height * directions_n));
+                                    &d_im_templates_pitch, 
+                                    sizeof(float) * width, 
+                                    height * directions_n));
     checkCudaErrors(cudaMemcpy2D(d_im_templates, 
                                  d_im_templates_pitch, 
                                  im_templates, 
