@@ -69,7 +69,7 @@ def foggdd(_im, threshold):
     lattice_size = 31 # consider the origin in the lattice
     templates = compute_templates(im_padded, directions_n, sigmas, rho, lattice_size)
 
-    assert_arrays("templates", templates)
+    # assert_arrays("templates", templates)
     # templates = np.load("gt_arrays/templates.npy", allow_pickle=True)
 
     # NOTE: The code below is creating the following mask
@@ -110,7 +110,7 @@ def foggdd(_im, threshold):
     # assert_arrays("measure", measure) #! test
 
     points_of_interest = nonma(corner_measure, threshold, nonma_radius)
-    assert_arrays("measure_nonma", points_of_interest)
+    # assert_arrays("measure_nonma", points_of_interest)
 
     for sigma_idx in range(1, len(sigmas)):
         poi_maintained_mask = []
@@ -132,9 +132,11 @@ def foggdd(_im, threshold):
     return points_of_interest        
 
 if __name__ == "__main__":
-    im = cv2.imread("17.bmp")
+    im = cv2.imread("data/17.bmp")
     poi_arr = foggdd(im, 10 ** 8.4)   
-    poi_arr_prev = np.load("gt_arrays/measure_3.npy")
+    poi_arr_prev = poi_arr[0:1] # np.load("gt_arrays/measure_3.npy")
+
+    print(f"Points of interest found: {poi_arr.shape}")
 
     # [[y1,x1],...] --> [[x1,y1],...]
     poi_arr = np.flip(poi_arr,axis=-1)
@@ -150,7 +152,9 @@ if __name__ == "__main__":
 
         cv2.drawMarker(im, poi, color, cv2.MARKER_SQUARE, markerSize=2, thickness=1, line_type=cv2.LINE_AA)
 
-    cv2.namedWindow("FOGGDD", 0)
-    cv2.imshow("FOGGDD", im)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    cv2.imwrite("data/result.jpg", im)
+
+    # cv2.namedWindow("FOGGDD", 0)
+    # cv2.imshow("FOGGDD", im)
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()

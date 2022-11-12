@@ -174,18 +174,18 @@ cv::Mat foggdd(const cv::Mat &img)
     std::cout << "Points of interest found in CUDA array: " << points_of_interest.size() << "\n";
 
     cv::Mat mask = cv::Mat::ones(patch_size, patch_size, CV_8U), mask_indexes;
-    mask.at<uint8_t>(0,0) = 0;
-    mask.at<uint8_t>(0,1) = 0;
-    mask.at<uint8_t>(0,patch_size-1) = 0;
-    mask.at<uint8_t>(0,patch_size-2) = 0;
-    mask.at<uint8_t>(1,0) = 0;
-    mask.at<uint8_t>(1,patch_size-1) = 0;
-    mask.at<uint8_t>(patch_size-2,0) = 0;
-    mask.at<uint8_t>(patch_size-2,patch_size-1) = 0;
-    mask.at<uint8_t>(patch_size-1,0) = 0;
-    mask.at<uint8_t>(patch_size-1,1) = 0;
-    mask.at<uint8_t>(patch_size-1,patch_size-1) = 0;
-    mask.at<uint8_t>(patch_size-1,patch_size-2) = 0;
+    mask.at<unsigned char>(0,0) = 0;
+    mask.at<unsigned char>(0,1) = 0;
+    mask.at<unsigned char>(0,patch_size-1) = 0;
+    mask.at<unsigned char>(0,patch_size-2) = 0;
+    mask.at<unsigned char>(1,0) = 0;
+    mask.at<unsigned char>(1,patch_size-1) = 0;
+    mask.at<unsigned char>(patch_size-2,0) = 0;
+    mask.at<unsigned char>(patch_size-2,patch_size-1) = 0;
+    mask.at<unsigned char>(patch_size-1,0) = 0;
+    mask.at<unsigned char>(patch_size-1,1) = 0;
+    mask.at<unsigned char>(patch_size-1,patch_size-1) = 0;
+    mask.at<unsigned char>(patch_size-1,patch_size-2) = 0;
     cv::findNonZero(mask, mask_indexes);
     size_t mask_len = mask_indexes.total();
 

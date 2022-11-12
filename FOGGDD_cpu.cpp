@@ -3,7 +3,6 @@
 #include <chrono>
 #include <vector>
 
-#include "cnpy/cnpy.h"
 #include <Eigen/Dense>
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/eigen.hpp>
@@ -104,21 +103,19 @@ cv::Mat foggdd(const cv::Mat &img)
     auto end = std::chrono::steady_clock::now();
     std::cout << "Computed templates: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
 
-    // cnpy::npy_save("../pred_arrays/templates.npy", reinterpret_cast<double *>(im_templates[0][0].data), {im_templates[0][0].rows, im_templates[0][0].cols}, "w");
-
     cv::Mat mask = cv::Mat::ones(patch_size, patch_size, CV_8U), mask_indexes;
-    mask.at<uint8_t>(0,0) = 0;
-    mask.at<uint8_t>(0,1) = 0;
-    mask.at<uint8_t>(0,patch_size-1) = 0;
-    mask.at<uint8_t>(0,patch_size-2) = 0;
-    mask.at<uint8_t>(1,0) = 0;
-    mask.at<uint8_t>(1,patch_size-1) = 0;
-    mask.at<uint8_t>(patch_size-2,0) = 0;
-    mask.at<uint8_t>(patch_size-2,patch_size-1) = 0;
-    mask.at<uint8_t>(patch_size-1,0) = 0;
-    mask.at<uint8_t>(patch_size-1,1) = 0;
-    mask.at<uint8_t>(patch_size-1,patch_size-1) = 0;
-    mask.at<uint8_t>(patch_size-1,patch_size-2) = 0;
+    mask.at<unsigned char>(0,0) = 0;
+    mask.at<unsigned char>(0,1) = 0;
+    mask.at<unsigned char>(0,patch_size-1) = 0;
+    mask.at<unsigned char>(0,patch_size-2) = 0;
+    mask.at<unsigned char>(1,0) = 0;
+    mask.at<unsigned char>(1,patch_size-1) = 0;
+    mask.at<unsigned char>(patch_size-2,0) = 0;
+    mask.at<unsigned char>(patch_size-2,patch_size-1) = 0;
+    mask.at<unsigned char>(patch_size-1,0) = 0;
+    mask.at<unsigned char>(patch_size-1,1) = 0;
+    mask.at<unsigned char>(patch_size-1,patch_size-1) = 0;
+    mask.at<unsigned char>(patch_size-1,patch_size-2) = 0;
     cv::findNonZero(mask, mask_indexes);
     size_t mask_len = mask_indexes.total();
 
@@ -154,7 +151,6 @@ cv::Mat foggdd(const cv::Mat &img)
     cv::Mat points_of_interest = nonma(corner_measure, threshold, nonma_radius);
     end = std::chrono::steady_clock::now();
     std::cout << "Nonma: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
-    // cnpy::npy_save("../pred_arrays/measure_nonma.npy", reinterpret_cast<double *>(corner_measure.data), {corner_measure.rows, corner_measure.cols});
 
     start = std::chrono::steady_clock::now();
     for(size_t sigma_idx=1; sigma_idx < sigmas.size(); sigma_idx++)
@@ -200,20 +196,8 @@ cv::Mat foggdd(const cv::Mat &img)
         output.push_back(point.y);
         output.push_back(point.x);
     }
-    cnpy::npy_save("../pred_arrays/measure_3.npy", &output[0], {output.size()});
 
     return points_of_interest;
-
-
-}
-
-void cnpy2eigen(std::string data_fname, cv::Mat &out_mat){
-    cnpy::NpyArray npy_data = cnpy::npy_load(data_fname);
-    int data_row = npy_data.shape[0];
-    int data_col = npy_data.shape[1];
-    double* ptr = static_cast<double *>(malloc(data_row * data_col * sizeof(double)));
-    memcpy(ptr, npy_data.data<double>(), data_row * data_col * sizeof(double));
-    out_mat = cv::Mat(data_col, data_row, CV_8U, ptr); // CV_64F is equivalent double
 }
 
 int main(int argc, char **argv)
@@ -223,9 +207,6 @@ int main(int argc, char **argv)
 
     cv::Mat img = cv::imread("../data/17.bmp");
     cv::Mat points_of_interest;
-
-    cv::Mat corner_measure;
-    cnpy2eigen("../gt_arrays/measure_nonma.npy", corner_measure);
 
     auto start = std::chrono::steady_clock::now();
     points_of_interest = foggdd(img);

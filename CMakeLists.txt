@@ -12,8 +12,6 @@ include_directories( ${OpenCV_INCLUDE_DIRS} eigen)
 find_package(OpenMP REQUIRED)
 find_package(CUDAToolkit)
 
-add_library(cnpy SHARED "cnpy/cnpy.cpp")
-
 add_library( FOGGDD_kernel SHARED FOGGDD_kernels.cu )
 target_link_libraries(FOGGDD_kernel CUDA::nppc CUDA::nppisu CUDA::nppif CUDA::nppial)
 
@@ -22,7 +20,7 @@ target_link_libraries(FOGGDD_kernel CUDA::nppc CUDA::nppisu CUDA::nppif CUDA::np
 set_target_properties(FOGGDD_kernel PROPERTIES CUDA_ARCHITECTURES "61")
 
 add_executable( FOGGDD FOGGDD.cpp )
-target_link_libraries( FOGGDD ${OpenCV_LIBS} cnpy OpenMP::OpenMP_CXX FOGGDD_kernel)
+target_link_libraries( FOGGDD ${OpenCV_LIBS} OpenMP::OpenMP_CXX FOGGDD_kernel)
 
 add_executable( FOGGDD_cpu FOGGDD_cpu.cpp )
-target_link_libraries( FOGGDD_cpu ${OpenCV_LIBS} cnpy OpenMP::OpenMP_CXX )
+target_link_libraries( FOGGDD_cpu ${OpenCV_LIBS} OpenMP::OpenMP_CXX )
