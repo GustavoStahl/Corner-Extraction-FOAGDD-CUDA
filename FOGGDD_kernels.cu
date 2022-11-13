@@ -140,22 +140,24 @@ d_first_corner_measures(const float* im_templates,
     }         
 
     const size_t mask_len = filter_size*filter_size - CORNER_NUM; 
-    // Loop through the xy kernel
-    // We have precomputed the valid kernel coord with corners removed in noncorner_coords
-    for (size_t k = 0; k < mask_len; k++) {
-        const size_t curr_row = row_local_shifted + noncorner_coords[k].y;
-        const size_t curr_col = col_local_shifted + noncorner_coords[k].x;
 
-        // Add the A * At contributions for this pixel
-        // Avoid extra loopings by noting that the matrix is symmetrical, we will mirror it after
-        for (size_t i = 0; i < directions_n; i++) 
+    // Add the A * At contributions for this pixel
+    // Avoid extra loopings by noting that the matrix is symmetrical, we will mirror it after
+    for (size_t i = 0; i < directions_n; i++) 
+    {
+        for (size_t j = i; j < directions_n; j++) 
         {
-            for (size_t j = i; j < directions_n; j++) 
+            // Loop through the xy kernel
+            // We have precomputed the valid kernel coord with corners removed in noncorner_coords
+            for (size_t k = 0; k < mask_len; k++)
             {
+                const size_t curr_row = row_local_shifted + noncorner_coords[k].y;
+                const size_t curr_col = col_local_shifted + noncorner_coords[k].x;     
+                
                 template_symmetric[i][j] += im_template_shr[i][curr_row][curr_col] * im_template_shr[j][curr_row][curr_col];
             }
         }
-    }    
+    }
 
     // Mirror the matrix about the diagonal
     for (size_t i = 0; i < directions_n; i++) 
