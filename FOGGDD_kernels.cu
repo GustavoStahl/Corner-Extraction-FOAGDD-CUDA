@@ -19,14 +19,14 @@
 #define CORNER_NUM 12
 #define MASK_MAX FILTER_MAX*FILTER_MAX - CORNER_NUM
 
-__device__ float determinant(const float matrix[][DIRECTIONS_MAX], const size_t rank)
+__device__ float determinant(float triang_mat[][DIRECTIONS_MAX], const size_t rank)
 {
     float ratio, det=1.f;
 
-    float triang_mat[DIRECTIONS_MAX][DIRECTIONS_MAX];
+    /* float triang_mat[DIRECTIONS_MAX][DIRECTIONS_MAX];
     for(size_t i=0; i<rank; i++)
         for(size_t j=0; j<rank; j++)
-            triang_mat[i][j] = matrix[i][j];
+            triang_mat[i][j] = matrix[i][j]; */
 
     for(size_t i=0; i<rank; i++)
     {
@@ -64,19 +64,7 @@ __device__ float trace(const float matrix[][DIRECTIONS_MAX], const size_t rank)
     return sum_fdiag;
 }
 
-__constant__ size_t skip_idxes[CORNER_NUM];
-__device__ bool is_skipable(const size_t idx)
-{
-    #pragma unroll
-    for(size_t i=0; i<CORNER_NUM; i++)
-    {
-        if(skip_idxes[i] == idx)
-        {
-            return true;
-        }
-    }
-    return false;
-}
+__constant__ uchar2 noncorner_coords[MASK_MAX];
 
 /* possible overhead: 
    * not enough registers 
@@ -85,7 +73,6 @@ __device__ bool is_skipable(const size_t idx)
 */
 
 __global__ void 
-__launch_bounds__(BLOCK_SIZE*BLOCK_SIZE, 3)
 d_first_corner_measures(const float* im_templates, 
                         const size_t im_templates_pitch,
                         float* corner_measure,
@@ -107,7 +94,7 @@ d_first_corner_measures(const float* im_templates,
     if (col_global >= width + padding_size_twice || row_global >= height + padding_size_twice)
         return;
 
-    __shared__ float im_template_shr[BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ float im_template_shr[DIRECTIONS_MAX][BLOCK_SIZE][BLOCK_SIZE];
 
     const ptrdiff_t col_global_shifted = col_global - (ptrdiff_t)padding_size;
     const ptrdiff_t row_global_shifted = row_global - (ptrdiff_t)padding_size;
@@ -117,72 +104,71 @@ d_first_corner_measures(const float* im_templates,
 
     if (is_padding_zeros) 
     {
-        im_template_shr[threadIdx.y][threadIdx.x] = 0.f;
+        for (size_t direction_idx = 0; direction_idx < directions_n; direction_idx++)
+        {
+            im_template_shr[direction_idx][threadIdx.y][threadIdx.x] = 0.f;
+        }
         return;
-    }       
+    }                    
+
+    // Copy 'directions_n' tiles into shared memory
+    for (size_t direction_idx = 0; direction_idx < directions_n; direction_idx++)
+    {
+        float val = *((float*)((char*)im_templates + (direction_idx * height + row_global_shifted) * im_templates_pitch) + col_global_shifted);
+        im_template_shr[direction_idx][threadIdx.y][threadIdx.x] = val;
+    }
 
     const ptrdiff_t col_local_shifted = threadIdx.x - (ptrdiff_t)padding_size;
     const ptrdiff_t row_local_shifted = threadIdx.y - (ptrdiff_t)padding_size;    
 
     bool is_padding = col_local_shifted < 0 || col_local_shifted >= blockDim.x - (ptrdiff_t)padding_size_twice || 
-                      row_local_shifted < 0 || row_local_shifted >= blockDim.y - (ptrdiff_t)padding_size_twice;
-      
-    const size_t mask_len = filter_size*filter_size - CORNER_NUM; 
+                      row_local_shifted < 0 || row_local_shifted >= blockDim.y - (ptrdiff_t)padding_size_twice;        
 
-    float templates_slice[DIRECTIONS_MAX][MASK_MAX];   
-
-    for(size_t direction_idx = 0; direction_idx < directions_n; direction_idx++)
-    {
-
-        float val = *((float*)((char*)im_templates + (direction_idx * height + row_global_shifted) * im_templates_pitch) + col_global_shifted);
-        im_template_shr[threadIdx.y][threadIdx.x] = val;
-
-        __syncthreads();    
-
-        if(! is_padding)
-        {
-            size_t mask_count = 0;
-            for(size_t pad_row=0; pad_row < filter_size; pad_row++)
-            {
-                const size_t curr_row = row_local_shifted + pad_row;
-                for(size_t pad_col=0; pad_col < filter_size; pad_col++)
-                {
-                    const size_t mask_idx_curr = pad_row * filter_size + pad_col;
-    
-                    if(is_skipable(mask_idx_curr)) 
-                       continue;
-    
-                    const size_t curr_col = col_local_shifted + pad_col;
-                       
-                    templates_slice[direction_idx][mask_count] = im_template_shr[curr_row][curr_col];
-    
-                    mask_count++;
-                }
-            } 
-        }
-        __syncthreads();    
-    }
-
-    if(is_padding)
+    if(is_padding)                      
         return;
 
-    // Matrix multiplication
+    __syncthreads(); 
+
     float template_symmetric[DIRECTIONS_MAX][DIRECTIONS_MAX];
+    // Initialise the result matrix
     for (size_t i = 0; i < directions_n; i++) 
     {
         for (size_t j = 0; j < directions_n; j++) 
         {
             template_symmetric[i][j] = 0.f;
-            for (size_t k = 0; k < mask_len; k++)
+        }
+    }         
+
+    const size_t mask_len = filter_size*filter_size - CORNER_NUM; 
+    // Loop through the xy kernel
+    // We have precomputed the valid kernel coord with corners removed in noncorner_coords
+    for (size_t k = 0; k < mask_len; k++) {
+        const size_t curr_row = row_local_shifted + noncorner_coords[k].y;
+        const size_t curr_col = col_local_shifted + noncorner_coords[k].x;
+
+        // Add the A * At contributions for this pixel
+        // Avoid extra loopings by noting that the matrix is symmetrical, we will mirror it after
+        for (size_t i = 0; i < directions_n; i++) 
+        {
+            for (size_t j = i; j < directions_n; j++) 
             {
-                // Equivalent to A @ A.T
-                template_symmetric[i][j] += templates_slice[i][k] * templates_slice[j][k];
+                template_symmetric[i][j] += im_template_shr[i][curr_row][curr_col] * im_template_shr[j][curr_row][curr_col];
             }
         }
-    }
+    }    
 
-    const float det = determinant(template_symmetric, directions_n);
+    // Mirror the matrix about the diagonal
+    for (size_t i = 0; i < directions_n; i++) 
+    {
+        for (size_t j = 0; j < i; j++) 
+        {
+            template_symmetric[i][j] = template_symmetric[j][i];
+        }
+    }    
+
     const float trc = trace(template_symmetric, directions_n);
+    // to save registers, the input matrix isn't coppied; thus, changed inplace
+    const float det = determinant(template_symmetric, directions_n); 
 
     float *corner_measure_row = (float*)((char*)corner_measure + row_global_shifted * corner_measure_pitch);
     corner_measure_row[col_global_shifted] = det / (trc + eps);
@@ -303,13 +289,41 @@ int init_cuda_device(int argc, const char **argv)
     return dev;
 }
 
-void update_skip_idxes(size_t filter_size)
+void compute_noncorner_coords(size_t filter_size)
 {
-    size_t h_skip_idxes[] = {0, 1, filter_size-2, 
-                             filter_size-1, filter_size, 2*filter_size-1, 
-                             filter_size*(filter_size-2), filter_size*(filter_size-1)-1, filter_size*(filter_size-1),
-                             filter_size*(filter_size-1)+1, filter_size*filter_size-2, filter_size*filter_size-1};    
-    checkCudaErrors(cudaMemcpyToSymbol(skip_idxes, h_skip_idxes, sizeof(size_t)*CORNER_NUM));
+    size_t corner_indexes[] = {0, 1, filter_size-2, 
+                               filter_size-1, filter_size, 2*filter_size-1, 
+                               filter_size*(filter_size-2), filter_size*(filter_size-1)-1, filter_size*(filter_size-1),
+                               filter_size*(filter_size-1)+1, filter_size*filter_size-2, filter_size*filter_size-1}; 
+
+    uchar2 h_noncorner_coords[MASK_MAX];
+    size_t noncorner_count = 0;
+    for(unsigned i=0; i<filter_size; i++)
+    {
+        for(unsigned j=0; j<filter_size; j++)
+        {
+            bool is_corner = false;
+            #pragma unroll
+            for(auto corner_index : corner_indexes)
+            {
+                if(i * filter_size + j == corner_index)
+                {
+                    is_corner = true;
+                    break;
+                }
+            }
+
+            if(is_corner)
+            {
+                continue;
+            }
+
+            h_noncorner_coords[noncorner_count] = make_uchar2(i, j);
+            noncorner_count += 1;
+        }
+    }
+
+    checkCudaErrors(cudaMemcpyToSymbol(noncorner_coords, h_noncorner_coords, sizeof(uchar2)*noncorner_count));
 }
 
 /*
@@ -323,7 +337,7 @@ float* first_corner_measures(const float *im_templates,
                              const size_t filter_size, 
                              const float eps)
 {
-    update_skip_idxes(filter_size);
+    compute_noncorner_coords(filter_size);
 
     size_t d_im_templates_pitch, d_corner_measures_pitch;
 
