@@ -1,13 +1,12 @@
 #include <stdio.h>
 #include <iostream>
-#include <npp.h>
 
 #include "helper_cuda.h"
 #include "helper_npp.h"
 
 #define DIRECTIONS_MAX 8
 #define FILTER_MAX 7
-#define BLOCK_SIZE 25
+#define BLOCK_SIZE 32
 
 /* 
    ##.##
@@ -22,11 +21,6 @@
 __device__ float determinant(float triang_mat[][DIRECTIONS_MAX], const size_t rank)
 {
     float ratio, det=1.f;
-
-    /* float triang_mat[DIRECTIONS_MAX][DIRECTIONS_MAX];
-    for(size_t i=0; i<rank; i++)
-        for(size_t j=0; j<rank; j++)
-            triang_mat[i][j] = matrix[i][j]; */
 
     for(size_t i=0; i<rank; i++)
     {
@@ -176,97 +170,155 @@ d_first_corner_measures(const float* im_templates,
     corner_measure_row[col_global_shifted] = det / (trc + eps);
 }
 
-// __device__ Npp32s nSrcStep;
-// __device__ Npp32f *pSrc;
+/*
+__global__ void 
+d_convolution_Nfilters(const float* image,
+                       const size_t image_pitch,
+                       const float* filters,
+                       const size_t filters_pitch,
+                       const size_t filter_size,
+                       const size_t n_filters,
+                       float* templates,
+                       const size_t templates_pitch,
+                       const size_t width,
+                       const size_t height)
+{
+    const size_t padding_size = filter_size/2; // floor division
+    const size_t padding_size_twice = filter_size - 1;
+
+    // NOTE: the use of ptrdiff_t is due to signed and unsigned conversions
+    const size_t col_global = threadIdx.x + blockIdx.x * (blockDim.x - (ptrdiff_t)padding_size_twice);
+    const size_t row_global = threadIdx.y + blockIdx.y * (blockDim.y - (ptrdiff_t)padding_size_twice);
+
+    // Check if thread is outside the image "padded" region
+    if (col_global >= width + padding_size_twice || row_global >= height + padding_size_twice)
+        return;
+
+    __shared__ float image_shr[BLOCK_SIZE][BLOCK_SIZE];
+
+    const ptrdiff_t col_global_shifted = col_global - (ptrdiff_t)padding_size;
+    const ptrdiff_t row_global_shifted = row_global - (ptrdiff_t)padding_size;
+
+    bool is_padding_zeros = col_global_shifted < 0 || col_global_shifted >= (ptrdiff_t)width || 
+                            row_global_shifted < 0 || row_global_shifted >= (ptrdiff_t)height;
+
+    if (is_padding_zeros) 
+    {
+        image_shr[threadIdx.y][threadIdx.x] = 0.f;
+        return;
+    }                    
+
+    float val = *((float*)((char*)image + row_global * image_pitch) + col_global);
+    image_shr[threadIdx.y][threadIdx.x] = val;
+
+    ptrdiff_t col_local_shifted = threadIdx.x - (ptrdiff_t)padding_size;
+    ptrdiff_t row_local_shifted = threadIdx.y - (ptrdiff_t)padding_size;    
+
+    bool is_padding = col_local_shifted < 0 || col_local_shifted >= blockDim.x - (ptrdiff_t)padding_size_twice || 
+                      row_local_shifted < 0 || row_local_shifted >= blockDim.y - (ptrdiff_t)padding_size_twice;        
+
+    if(is_padding)                      
+        return;
+
+    __syncthreads(); 
+
+    for(size_t filter_idx=0; filter_idx<n_filters; filter_idx++)
+    {
+        float tmp = 0.f;
+        for(size_t curr_row=0; curr_row<filter_size; curr_row++)
+        {
+            int row_idx = row_local_shifted + curr_row;
+            for(size_t curr_col=0; curr_col<filter_size; curr_col++)
+            {
+                int col_idx = col_local_shifted + curr_col;
+
+                float filter_value = *((float*)((char*)filters + (filter_idx * filter_size + row_idx) * filters_pitch) + col_idx);
+                tmp += image_shr[row_idx][col_idx] * filter_value;
+            }
+        }
+        float* template_row = (float*)((char*)templates + (filter_idx * height + row_global_shifted) * templates_pitch);
+        template_row[col_global_shifted] = tmp;
+    }
+}
 
 extern "C"
-float* set_filter_src_image(const float *h_pSrc, 
-                            const int width, 
+float* convolution_Nfilters(const float *image,
+                            const int width,
                             const int height,
-                            int &nSrcStep)
+                            const std::vector<float*> conv_filters, 
+                            const int filter_size)
 {
-    // Npp32s nSrcStep_tmp;
-    Npp32f *d_pSrc;
 
-    d_pSrc = nppiMalloc_32f_C1(width, height, &nSrcStep); 
-    checkCudaErrors(cudaMemcpy2D(d_pSrc, 
-                                 nSrcStep, 
-                                 h_pSrc, 
+    size_t n_filters = conv_filters.size(), d_image_pitch, d_filters_pitch, d_templates_pitch;
+
+    float *d_image, *d_filters, *d_templates, *h_templates;
+
+    checkCudaErrors(cudaMallocPitch(&d_image, 
+                                    &d_image_pitch, 
+                                    sizeof(float) * width, 
+                                    height));
+    checkCudaErrors(cudaMemcpy2D(d_image, 
+                                 d_image_pitch, 
+                                 image, 
                                  sizeof(float)*width, 
                                  sizeof(float)*width, 
                                  height, 
-                                 cudaMemcpyHostToDevice));   
+                                 cudaMemcpyHostToDevice));  
 
-    return d_pSrc;                                 
-                                 
-    // checkCudaErrors(cudaMemcpyToSymbol(pSrc, pSrc_tmp, width*height*nSrcStep_tmp, 0, cudaMemcpyDeviceToDevice));
-    // checkCudaErrors(cudaMemcpyToSymbol(&nSrcStep, &nSrcStep_tmp, sizeof(Npp32s), 0, cudaMemcpyDeviceToDevice));
-}
+    checkCudaErrors(cudaMallocPitch(&d_filters, 
+                                    &d_filters_pitch, 
+                                    sizeof(float) * filter_size, 
+                                    filter_size * n_filters));
+    checkCudaErrors(cudaMemcpy2D(d_filters, 
+                                 d_filters_pitch, 
+                                 conv_filters.data(), 
+                                 sizeof(float)*filter_size, 
+                                 sizeof(float)*filter_size, 
+                                 filter_size * n_filters, 
+                                 cudaMemcpyHostToDevice));                                   
+                                      
+    checkCudaErrors(cudaMallocPitch(&d_templates, 
+                                    &d_templates_pitch, 
+                                    sizeof(float) * width, 
+                                    height * n_filters));    
+                                   
+    checkCudaErrors(cudaMallocHost(&h_templates, sizeof(float) * width * height * n_filters));  
 
-extern "C"
-float* compute_templates(float* pSrc,
-                         const int pSrcStep,
-                         const int width, 
-                         const int height, 
-                         const float *conv_filter, 
-                         const int filter_size)
-{
-    Npp32s nDstStep;
+    ptrdiff_t useful_region = BLOCK_SIZE - filter_size + 1;
+    if(useful_region < 0)
+    {
+        printf("No useful region\n");
+    }
 
-    Npp32f *pDst, *pKernel;
-    float* im_template;                               
+    // int THREADS = 16;
+    dim3 block_dim(BLOCK_SIZE,BLOCK_SIZE);
+    dim3 grid_dim((width+useful_region-1)/useful_region, (height+useful_region-1)/useful_region);
+    d_convolution_Nfilters<<<grid_dim, block_dim>>>(d_image, 
+                                                    d_image_pitch,
+                                                    d_filters, 
+                                                    d_filters_pitch, 
+                                                    filter_size, 
+                                                    n_filters, 
+                                                    d_templates,
+                                                    d_templates_pitch, 
+                                                    width, 
+                                                    height);
 
-    cudaMalloc((void**)&pKernel, sizeof(Npp32f)*filter_size*filter_size);
-    cudaMemcpy(pKernel, conv_filter, sizeof(Npp32f)*filter_size*filter_size, cudaMemcpyHostToDevice);
+    checkCudaErrors(cudaMemcpy2D(h_templates, 
+                                  sizeof(float)*width, 
+                                  d_templates, 
+                                  d_templates_pitch, 
+                                  sizeof(float)*width, 
+                                  n_filters * height, 
+                                  cudaMemcpyDeviceToHost)); 
 
-    pDst = nppiMalloc_32f_C1(width, height, &nDstStep); 
+    checkCudaErrors(cudaFree(d_image));
+    checkCudaErrors(cudaFree(d_filters));
+    checkCudaErrors(cudaFree(d_templates));
 
-    checkCudaErrors(cudaMallocHost(&im_template, sizeof(float) * width * height));
-
-    NppiSize oSrcSize = {width, height};
-    NppiPoint oSrcOffset = {0, 0};
-    NppiSize oSizeROI = {width, height};
-    NppiSize oKernelSize = {filter_size, filter_size};
-    NppiPoint oAnchor = {filter_size/2, filter_size/2};
-
-    // Npp32s nSrcStep_val;
-    // Npp32f *pSrc_ptr;
-    // checkCudaErrors(cudaMemcpyFromSymbol(&nSrcStep_val, nSrcStep, sizeof(Npp32s)));
-    // checkCudaErrors(cudaGetSymbolAddress((void**)&pSrc_ptr, pSrc));
-
-    NPP_CHECK_NPP(nppiFilterBorder_32f_C1R(pSrc, 
-                                           pSrcStep,
-                                           oSrcSize,
-                                           oSrcOffset,
-                                           pDst,
-                                           nDstStep,
-                                           oSizeROI,
-                                           pKernel,
-                                           oKernelSize,
-                                           oAnchor,
-                                           NPP_BORDER_REPLICATE));
-
-    // NPP_CHECK_NPP(nppiAbs_32f_C1R(pDst, nDstStep, pDst, nDstStep, oSizeROI));
-                             
-    checkCudaErrors(cudaMemcpy2D(im_template, 
-                                 sizeof(float)*width, 
-                                 pDst, 
-                                 nDstStep, 
-                                 sizeof(Npp32f)*width, 
-                                 height, 
-                                 cudaMemcpyDeviceToHost)); 
-
-    // nppiFree(pSrc);
-    nppiFree(pDst);
-    nppiFree(pKernel);
-
-    return im_template;                                    
-}
-
-extern "C"
-void sequential_corner_measures()
-{
-}
+    return h_templates;
+}   
+*/                         
 
 extern "C"
 int init_cuda_device(int argc, const char **argv)

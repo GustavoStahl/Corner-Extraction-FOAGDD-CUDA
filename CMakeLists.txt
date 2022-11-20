@@ -13,7 +13,7 @@ find_package(OpenMP REQUIRED)
 find_package(CUDAToolkit)
 
 add_library( FOGGDD_kernel SHARED FOGGDD_kernels.cu )
-target_link_libraries(FOGGDD_kernel CUDA::nppc CUDA::nppisu CUDA::nppif CUDA::nppial)
+target_link_libraries(FOGGDD_kernel)
 
 # This line of code will generate a binary optimized to my CUDA architecture (Pascal).
 # Depending on the GPU, this should be changed
