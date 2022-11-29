@@ -7,11 +7,10 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/imgproc.hpp>
+#include <arrayfire.h>
 
 extern "C" int init_cuda_device(int argc, const char **argv);
 extern "C" float* first_corner_measures(float *im_templates, size_t width, size_t height, size_t directions_n, size_t patch_size, float eps);
-extern "C" float* set_filter_src_image(const float *h_pSrc, const int width, const int height,int &nSrcStep);
-extern "C" float* compute_templates(float* pSrc, const int pSrcStep, const int width,  const int height,  const float *conv_filter,  const int filter_size);
 
 cv::Mat nonma(cv::Mat cim, float threshold, size_t radius)
 {
@@ -45,7 +44,7 @@ std::vector<std::vector<cv::Mat>> compute_filters(int directions_n,
         float theta = direction_idx * M_PI / directions_n;
         Eigen::RowVector2f theta_2d {cos(theta), sin(theta)};
         Eigen::Matrix<float,2,2,Eigen::RowMajor> R {{ cos(theta), sin(theta)}, 
-                                                     {-sin(theta), cos(theta)}};
+                                                    {-sin(theta), cos(theta)}};
         auto R_T = R.transpose();
 
         for(size_t sigma_idx=0; sigma_idx < sigmas.size(); sigma_idx++)
@@ -54,7 +53,6 @@ std::vector<std::vector<cv::Mat>> compute_filters(int directions_n,
 
             Eigen::Matrix<float,Eigen::Dynamic,Eigen::Dynamic,Eigen::RowMajor> anigs_direction(lattice_size,lattice_size);
 
-            #pragma omp parallel for collapse(2)
             for(size_t i=0; i<lattice_size; i++)
             {
                 for(size_t j=0; j<lattice_size; j++)
@@ -73,8 +71,6 @@ std::vector<std::vector<cv::Mat>> compute_filters(int directions_n,
             cv::Mat conv_filter;
             cv::eigen2cv(anigs_direction, conv_filter);
 
-            cv::flip(conv_filter,conv_filter,-1);
-
             im_filters[direction_idx][sigma_idx] = conv_filter; 
         }
     }
@@ -86,38 +82,90 @@ std::vector<std::vector<cv::Mat>> compute_templates(cv::Mat& im_gray, int patch_
     cv::Mat im_padded;
     cv::copyMakeBorder(im_gray, im_padded, patch_size, patch_size, patch_size, patch_size, cv::BORDER_REFLECT);
 
-    size_t directions_n = im_filters.size(), sigmas_n = im_filters[0].size();
+    size_t directions_n = im_filters.size(), sigmas_n = im_filters[0].size(), filter_size = im_filters[0][0].rows;
+
+    std::vector<cv::Mat> im_filters_collapsed(directions_n * sigmas_n);
+    for(size_t direction_idx=0; direction_idx < directions_n; direction_idx++)
+    {
+        for(size_t sigma_idx=0; sigma_idx < sigmas_n; sigma_idx++)
+        {
+            im_filters_collapsed[direction_idx * sigmas_n + sigma_idx] = im_filters[direction_idx][sigma_idx];
+        }
+    }   
+    cv::Mat im_filters_concat;
+    cv::vconcat(im_filters_collapsed.data(), im_filters_collapsed.size(), im_filters_concat);
+
+    af::array im_padded_gpu(im_padded.cols, im_padded.rows, reinterpret_cast<float*>(im_padded.data));
+    af::transposeInPlace(im_padded_gpu);
+
+    af::array im_filters_gpu(filter_size, filter_size, directions_n * sigmas_n, reinterpret_cast<float*>(im_filters_concat.data));
+    af::transposeInPlace(im_filters_gpu);
+
+    af::array im_templates_gpu = af::abs(af::convolve2(im_padded_gpu, im_filters_gpu));
+    af::transposeInPlace(im_templates_gpu);
+    
+    float* pim_templates = im_templates_gpu.host<float>();
 
     std::vector<std::vector<cv::Mat>> im_templates(directions_n, std::vector<cv::Mat>(sigmas_n));
-
-    std::vector<float*> conv_filters(directions_n * sigmas_n);
-
     for(size_t direction_idx=0; direction_idx < directions_n; direction_idx++)
     {
         for(size_t sigma_idx=0; sigma_idx < sigmas_n; sigma_idx++)
         {
-            conv_filters[direction_idx*sigmas_n+sigma_idx] = reinterpret_cast<float*>(im_filters[direction_idx][sigma_idx].data);
-        }
-    }    
-
-    #pragma omp parallel for collapse(2)
-    for(size_t direction_idx=0; direction_idx < directions_n; direction_idx++)
-    {
-        for(size_t sigma_idx=0; sigma_idx < sigmas_n; sigma_idx++)
-        {
-            cv::Mat conv_filter = im_filters[direction_idx][sigma_idx];
-
-            cv::Mat im_template;
-            cv::filter2D(im_padded, im_template, -1, conv_filter, cv::Point(-1,-1), 0, cv::BORDER_CONSTANT);
-
-            cv::absdiff(im_template, cv::Scalar::all(0), im_template);    
-
-            im_templates[direction_idx][sigma_idx] = im_template; 
+            size_t shift = (direction_idx * sigmas_n + sigma_idx) * im_padded.rows * im_padded.cols;            
+            im_templates[direction_idx][sigma_idx] = cv::Mat(im_padded.rows, im_padded.cols, CV_32F, pim_templates + shift);
         }
     }
 
     return im_templates;
 }
+
+// std::vector<std::vector<cv::Mat>> compute_templates(cv::Mat& im_gray, int patch_size, std::vector<std::vector<cv::Mat>> im_filters)
+// {
+//     cv::Mat im_padded;
+//     cv::copyMakeBorder(im_gray, im_padded, patch_size, patch_size, patch_size, patch_size, cv::BORDER_REFLECT);
+
+//     int im_padded_step;
+//     float* im_padded_gpu = set_filter_src_image(reinterpret_cast<float*>(im_padded.data), 
+//                                                 im_padded.cols, 
+//                                                 im_padded.rows,
+//                                                 im_padded_step);
+
+//     size_t directions_n = im_filters.size(), sigmas_n = im_filters[0].size();
+
+//     std::vector<std::vector<cv::Mat>> im_templates(directions_n, std::vector<cv::Mat>(sigmas_n));
+
+//     std::vector<float*> conv_filters(directions_n * sigmas_n);
+
+//     for(size_t direction_idx=0; direction_idx < directions_n; direction_idx++)
+//     {
+//         for(size_t sigma_idx=0; sigma_idx < sigmas_n; sigma_idx++)
+//         {
+//             conv_filters[direction_idx*sigmas_n+sigma_idx] = reinterpret_cast<float*>(im_filters[direction_idx][sigma_idx].data);
+//         }
+//     }
+
+//     // auto start = std::chrono::steady_clock::now();
+//     std::vector<float*> im_template_ptr = compute_templates(im_padded_gpu,
+//                                                             im_padded_step,
+//                                                             im_padded.cols, 
+//                                                             im_padded.rows, 
+//                                                             conv_filters,
+//                                                             im_filters[0][0].rows);
+//         // auto end = std::chrono::steady_clock::now();
+//         // std::cout << "template CUDA: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
+//     for(size_t direction_idx=0; direction_idx < directions_n; direction_idx++)
+//     {     
+//         for(size_t sigma_idx=0; sigma_idx < sigmas_n; sigma_idx++)
+//         {
+//             cv::Mat im_template = cv::Mat(im_padded.rows, im_padded.cols, CV_32F, im_template_ptr[direction_idx*sigmas_n + sigma_idx]);
+//             cv::absdiff(im_template, cv::Scalar::all(0), im_template);    
+
+//             im_templates[direction_idx][sigma_idx] = im_template; 
+//         }
+//     }
+
+//     return im_templates;
+// }
 
 cv::Mat foggdd(const cv::Mat &img)
 {
@@ -149,6 +197,7 @@ cv::Mat foggdd(const cv::Mat &img)
     end = std::chrono::steady_clock::now();
     std::cout << "Compute templates: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
 
+    start = std::chrono::steady_clock::now();
     std::vector<cv::Mat> im_templates_temp(im_templates.size());
     for(int i=0; i<im_templates.size(); i++)
     {
@@ -156,6 +205,8 @@ cv::Mat foggdd(const cv::Mat &img)
     }
     cv::Mat templates_vstack;
     cv::vconcat(im_templates_temp.data(), im_templates_temp.size(), templates_vstack);
+    end = std::chrono::steady_clock::now();
+    std::cout << "Create CUDA input: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
 
     start = std::chrono::steady_clock::now();
     float *corner_measure_ptr = first_corner_measures(reinterpret_cast<float *>(templates_vstack.data), 
@@ -170,6 +221,7 @@ cv::Mat foggdd(const cv::Mat &img)
     cv::Mat points_of_interest = nonma(corner_measure_cuda_mat, threshold, nonma_radius);
     std::cout << "Points of interest found in CUDA array: " << points_of_interest.size() << "\n";
 
+    start = std::chrono::steady_clock::now();
     cv::Mat mask = cv::Mat::ones(patch_size, patch_size, CV_8U), mask_indexes;
     mask.at<unsigned char>(0,0) = 0;
     mask.at<unsigned char>(0,1) = 0;
@@ -185,6 +237,8 @@ cv::Mat foggdd(const cv::Mat &img)
     mask.at<unsigned char>(patch_size-1,patch_size-2) = 0;
     cv::findNonZero(mask, mask_indexes);
     size_t mask_len = mask_indexes.total();
+    end = std::chrono::steady_clock::now();
+    std::cout << "Create mask: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
 
     start = std::chrono::steady_clock::now();
     for(size_t sigma_idx=1; sigma_idx < sigmas.size(); sigma_idx++)
@@ -223,6 +277,7 @@ cv::Mat foggdd(const cv::Mat &img)
     end = std::chrono::steady_clock::now();
     std::cout << "Iter through scales: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
 
+    start = std::chrono::steady_clock::now();
     std::vector<int> output; 
     for(size_t point_idx=0; point_idx < points_of_interest.total(); point_idx++)
     {
@@ -230,25 +285,26 @@ cv::Mat foggdd(const cv::Mat &img)
         output.push_back(point.y);
         output.push_back(point.x);
     }
+    end = std::chrono::steady_clock::now();
+    std::cout << "Create output: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
 
     return points_of_interest;
 }
 
 int main(int argc, const char **argv)
 {
-    Eigen::initParallel();
-    std::cout << "Eigen will be using: " << Eigen::nbThreads() << " threads\n";
-
     init_cuda_device(argc, argv);
 
     cv::Mat img = cv::imread("../data/17.bmp");
     cv::Mat points_of_interest;
 
-    auto start = std::chrono::steady_clock::now();
-    // for(size_t i=0; i<5; i++)
-    points_of_interest = foggdd(img);
-    auto end = std::chrono::steady_clock::now();
-    std::cout << "Elapsed time in milliseconds: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
+    for(size_t i=0; i<5; i++)
+    {
+        auto start = std::chrono::steady_clock::now();
+        points_of_interest = foggdd(img);
+        auto end = std::chrono::steady_clock::now();
+        std::cout << "Elapsed time in milliseconds: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
+    }
 
     for(size_t point_idx=0; point_idx < points_of_interest.total(); point_idx++)
     {

@@ -1,6 +1,5 @@
 import numpy as np
 import cv2
-from scipy import signal
 
 def assert_arrays(array_name, array_new):
     array_prev = np.load(f"gt_arrays/{array_name}.npy", allow_pickle=True)
