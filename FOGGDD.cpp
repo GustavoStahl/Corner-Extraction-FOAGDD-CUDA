@@ -96,14 +96,14 @@ std::vector<std::vector<cv::Mat>> compute_templates(cv::Mat& im_gray, int patch_
     cv::vconcat(im_filters_collapsed.data(), im_filters_collapsed.size(), im_filters_concat);
 
     af::array im_padded_gpu(im_padded.cols, im_padded.rows, reinterpret_cast<float*>(im_padded.data));
-    af::transposeInPlace(im_padded_gpu);
+    im_padded_gpu = af::transpose(im_padded_gpu);
 
     af::array im_filters_gpu(filter_size, filter_size, directions_n * sigmas_n, reinterpret_cast<float*>(im_filters_concat.data));
     af::transposeInPlace(im_filters_gpu);
 
     af::array im_templates_gpu = af::abs(af::convolve2(im_padded_gpu, im_filters_gpu));
-    af::transposeInPlace(im_templates_gpu);
-    
+    im_templates_gpu = af::transpose(im_templates_gpu);
+   
     float* pim_templates = im_templates_gpu.host<float>();
 
     std::vector<std::vector<cv::Mat>> im_templates(directions_n, std::vector<cv::Mat>(sigmas_n));
@@ -118,54 +118,6 @@ std::vector<std::vector<cv::Mat>> compute_templates(cv::Mat& im_gray, int patch_
 
     return im_templates;
 }
-
-// std::vector<std::vector<cv::Mat>> compute_templates(cv::Mat& im_gray, int patch_size, std::vector<std::vector<cv::Mat>> im_filters)
-// {
-//     cv::Mat im_padded;
-//     cv::copyMakeBorder(im_gray, im_padded, patch_size, patch_size, patch_size, patch_size, cv::BORDER_REFLECT);
-
-//     int im_padded_step;
-//     float* im_padded_gpu = set_filter_src_image(reinterpret_cast<float*>(im_padded.data), 
-//                                                 im_padded.cols, 
-//                                                 im_padded.rows,
-//                                                 im_padded_step);
-
-//     size_t directions_n = im_filters.size(), sigmas_n = im_filters[0].size();
-
-//     std::vector<std::vector<cv::Mat>> im_templates(directions_n, std::vector<cv::Mat>(sigmas_n));
-
-//     std::vector<float*> conv_filters(directions_n * sigmas_n);
-
-//     for(size_t direction_idx=0; direction_idx < directions_n; direction_idx++)
-//     {
-//         for(size_t sigma_idx=0; sigma_idx < sigmas_n; sigma_idx++)
-//         {
-//             conv_filters[direction_idx*sigmas_n+sigma_idx] = reinterpret_cast<float*>(im_filters[direction_idx][sigma_idx].data);
-//         }
-//     }
-
-//     // auto start = std::chrono::steady_clock::now();
-//     std::vector<float*> im_template_ptr = compute_templates(im_padded_gpu,
-//                                                             im_padded_step,
-//                                                             im_padded.cols, 
-//                                                             im_padded.rows, 
-//                                                             conv_filters,
-//                                                             im_filters[0][0].rows);
-//         // auto end = std::chrono::steady_clock::now();
-//         // std::cout << "template CUDA: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
-//     for(size_t direction_idx=0; direction_idx < directions_n; direction_idx++)
-//     {     
-//         for(size_t sigma_idx=0; sigma_idx < sigmas_n; sigma_idx++)
-//         {
-//             cv::Mat im_template = cv::Mat(im_padded.rows, im_padded.cols, CV_32F, im_template_ptr[direction_idx*sigmas_n + sigma_idx]);
-//             cv::absdiff(im_template, cv::Scalar::all(0), im_template);    
-
-//             im_templates[direction_idx][sigma_idx] = im_template; 
-//         }
-//     }
-
-//     return im_templates;
-// }
 
 cv::Mat foggdd(const cv::Mat &img)
 {
@@ -201,7 +153,7 @@ cv::Mat foggdd(const cv::Mat &img)
     std::vector<cv::Mat> im_templates_temp(im_templates.size());
     for(int i=0; i<im_templates.size(); i++)
     {
-        im_templates_temp[i] = im_templates[i][0](cv::Rect(patch_size, patch_size, rows, cols));
+        im_templates_temp[i] = im_templates[i][0](cv::Rect(patch_size, patch_size, cols, rows));
     }
     cv::Mat templates_vstack;
     cv::vconcat(im_templates_temp.data(), im_templates_temp.size(), templates_vstack);
