@@ -22,5 +22,8 @@ set_target_properties(FOGGDD_kernel PROPERTIES CUDA_ARCHITECTURES "61")
 add_executable( FOGGDD FOGGDD.cpp )
 target_link_libraries( FOGGDD ${OpenCV_LIBS} FOGGDD_kernel ArrayFire::afcuda)
 
+add_executable( FOAGDD FOAGDD.cpp )
+target_link_libraries( FOAGDD ${OpenCV_LIBS} FOGGDD_kernel ArrayFire::afcuda)
+
 add_executable( FOGGDD_cpu FOGGDD_cpu.cpp )
 target_link_libraries( FOGGDD_cpu ${OpenCV_LIBS} OpenMP::OpenMP_CXX )
