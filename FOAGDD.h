@@ -16,6 +16,7 @@ class FOAGDD
 {
     public:
     FOAGDD(size_t directions_n, std::vector<float> sigmas, float rho, float threshold);
+    ~FOAGDD();
     cv::Mat find_features(const cv::Mat &image);
 
     private:
@@ -35,6 +36,7 @@ class FOAGDD
 
     std::vector<std::vector<cv::Mat>> im_filters;
     af::array im_filters_gpu;
+    float* pim_templates = nullptr;
 
     std::vector<std::vector<cv::Mat>> compute_filters(int directions_n, 
                                                       std::vector<float> sigmas, 

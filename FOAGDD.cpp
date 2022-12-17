@@ -35,8 +35,13 @@ FOAGDD::FOAGDD(size_t directions_n, std::vector<float> sigmas, float rho, float 
     cv::Mat im_filters_concat;
     cv::vconcat(im_filters_collapsed.data(), im_filters_collapsed.size(), im_filters_concat);    
 
-    im_filters_gpu = af::array(lattice_size, lattice_size, directions_n * sigmas_n, reinterpret_cast<float*>(im_filters_concat.data));
+    im_filters_gpu = af::array(lattice_size, lattice_size, 1, directions_n * sigmas_n, reinterpret_cast<float*>(im_filters_concat.data));
     af::transposeInPlace(im_filters_gpu);
+}
+
+FOAGDD::~FOAGDD()
+{
+    af::freePinned(this->pim_templates);
 }
 
 cv::Mat FOAGDD::compute_noncorner_coords(int fingerprint_size)
@@ -145,10 +150,9 @@ std::vector<std::vector<cv::Mat>> FOAGDD::compute_templates(cv::Mat& im_gray)
 
     af::array im_templates_gpu = af::abs(af::convolve2(im_padded_gpu, 
                                                        this->im_filters_gpu));
-
     im_templates_gpu = af::transpose(im_templates_gpu);
    
-    float* pim_templates = im_templates_gpu.host<float>();
+    im_templates_gpu.host(this->pim_templates);
 
     size_t sigmas_n = sigmas.size();
     std::vector<std::vector<cv::Mat>> im_templates(this->directions_n, std::vector<cv::Mat>(sigmas_n));
@@ -160,11 +164,27 @@ std::vector<std::vector<cv::Mat>> FOAGDD::compute_templates(cv::Mat& im_gray)
             im_templates[direction_idx][sigma_idx] = cv::Mat(im_padded_height, 
                                                              im_padded_width, 
                                                              CV_32F, 
-                                                             pim_templates + shift);
+                                                             this->pim_templates + shift);
         }
     }
 
     return im_templates;
+}
+
+void FOAGDD::preallocate_gpu_mem(size_t width, size_t height)
+{
+    if(this->pim_templates && width == this->width && height == this->height)
+    {
+        return;
+    }
+
+    this->pim_templates = af::pinned<float>((width + 2*this->patch_size) * 
+                                            (height + 2*this->patch_size) * 
+                                            this->directions_n * 
+                                            this->sigmas.size());
+
+    this->width = width;
+    this->height = height;
 }
 
 cv::Mat FOAGDD::find_features(const cv::Mat &image)
@@ -180,6 +200,8 @@ cv::Mat FOAGDD::find_features(const cv::Mat &image)
     size_t image_width = image_gray.cols;
     size_t image_height = image_gray.rows;
 
+    preallocate_gpu_mem(image_width, image_height); // preallocate if necessary
+
     std::vector<std::vector<cv::Mat>> im_templates = compute_templates(image_gray);
 
     std::vector<cv::Mat> im_templates_temp(im_templates.size());
@@ -193,13 +215,13 @@ cv::Mat FOAGDD::find_features(const cv::Mat &image)
     cv::Mat templates_vstack;
     cv::vconcat(im_templates_temp.data(), im_templates_temp.size(), templates_vstack);
 
-    float *corner_measure_ptr = first_corner_measures(reinterpret_cast<float *>(templates_vstack.data), 
-                                                      image_width, 
-                                                      image_height, 
-                                                      this->directions_n, 
-                                                      this->patch_size, 
-                                                      this->eps);
-    cv::Mat corner_measure_cuda_mat(image_height, image_width, CV_32F, corner_measure_ptr);
+    float* pcorner_measures = first_corner_measures(reinterpret_cast<float *>(templates_vstack.data),
+                                                    image_width,
+                                                    image_height,
+                                                    this->directions_n,
+                                                    this->patch_size,
+                                                    this->eps);
+    cv::Mat corner_measure_cuda_mat(image_height, image_width, CV_32F, pcorner_measures);
 
     cv::Mat points_of_interest = nonma(corner_measure_cuda_mat, this->threshold, this->nonma_radius);
 
