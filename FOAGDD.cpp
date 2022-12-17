@@ -269,7 +269,20 @@ int main(int argc, const char **argv)
 {
     init_cuda_device(argc, argv);
 
-    cv::Mat img = cv::imread("../data/RnzgH.jpg");
+    size_t num_iters = 1;
+    std::string image_path = "../data/RnzgH.jpg";
+
+    if(argc >= 2)
+    {
+        num_iters = std::stoi(argv[1]);
+        std::cout << "[INFO] Iter number provided: " << num_iters << "\n";
+    }
+    if(argc >= 3)
+    {
+        image_path = argv[2];
+    }
+
+    cv::Mat img = cv::imread(image_path);
     cv::Mat points_of_interest;
 
     float rho = 1.5, threshold = pow(10, 8.4);
