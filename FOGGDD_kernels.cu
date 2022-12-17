@@ -60,13 +60,8 @@ __device__ float trace(const float matrix[][DIRECTIONS_MAX], const size_t rank)
 
 __constant__ uchar2 noncorner_coords[MASK_MAX];
 
-/* possible overhead: 
-   * not enough registers 
-   * uncoalesced memory access
-   * unsufficient streaming multiprocessor warps
-*/
-
 __global__ void 
+__launch_bounds__(BLOCK_SIZE*BLOCK_SIZE)
 d_first_corner_measures(const float* im_templates, 
                         const size_t im_templates_pitch,
                         float* corner_measure,
@@ -77,49 +72,138 @@ d_first_corner_measures(const float* im_templates,
                         const size_t filter_size, 
                         const float eps)
 {    
-    const size_t padding_size = filter_size/2; // floor division
-    const size_t padding_size_twice = filter_size - 1;
+    const int padding_size = filter_size/2; // floor division
 
     // NOTE: the use of ptrdiff_t is due to signed and unsigned conversions
-    const size_t col_global = threadIdx.x + blockIdx.x * (blockDim.x - (ptrdiff_t)padding_size_twice);
-    const size_t row_global = threadIdx.y + blockIdx.y * (blockDim.y - (ptrdiff_t)padding_size_twice);
+    const int col_global = threadIdx.x + blockIdx.x * blockDim.x;
+    const int row_global = threadIdx.y + blockIdx.y * blockDim.y;
 
     // Check if thread is outside the image "padded" region
-    if (col_global >= width + padding_size_twice || row_global >= height + padding_size_twice)
+    if (col_global >= width || row_global >= height)
         return;
 
-    __shared__ float im_template_shr[DIRECTIONS_MAX][BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ float im_template_shr[DIRECTIONS_MAX][BLOCK_SIZE+FILTER_MAX-1][BLOCK_SIZE+FILTER_MAX-1];
 
-    const ptrdiff_t col_global_shifted = col_global - (ptrdiff_t)padding_size;
-    const ptrdiff_t row_global_shifted = row_global - (ptrdiff_t)padding_size;
+    const int non_pad_x = threadIdx.x + padding_size;
+    const int non_pad_y = threadIdx.y + padding_size;
 
-    bool is_padding_zeros = col_global_shifted < 0 || col_global_shifted >= (ptrdiff_t)width || 
-                            row_global_shifted < 0 || row_global_shifted >= (ptrdiff_t)height;
+    bool is_padding = false;
+    bool is_padding_zeros = false;
 
-    if (is_padding_zeros) 
+    const int left_shift = threadIdx.x - padding_size;
+    const int right_shift = threadIdx.x + padding_size;
+    const int top_shift = threadIdx.y - padding_size;
+    const int bottom_shift = threadIdx.y + padding_size;
+
+    is_padding = (left_shift < 0 || right_shift >= BLOCK_SIZE ||
+                  top_shift < 0 || bottom_shift >= BLOCK_SIZE);
+
+    if(is_padding)
     {
-        for (size_t direction_idx = 0; direction_idx < directions_n; direction_idx++)
-        {
-            im_template_shr[direction_idx][threadIdx.y][threadIdx.x] = 0.f;
-        }
-        return;
-    }                    
-
-    // Copy 'directions_n' tiles into shared memory
-    for (size_t direction_idx = 0; direction_idx < directions_n; direction_idx++)
-    {
-        float val = *((float*)((char*)im_templates + (direction_idx * height + row_global_shifted) * im_templates_pitch) + col_global_shifted);
-        im_template_shr[direction_idx][threadIdx.y][threadIdx.x] = val;
+        is_padding_zeros = col_global - padding_size < 0 || col_global + padding_size >= width ||
+                           row_global - padding_size < 0 || row_global + padding_size >= height;        
     }
 
-    const ptrdiff_t col_local_shifted = threadIdx.x - (ptrdiff_t)padding_size;
-    const ptrdiff_t row_local_shifted = threadIdx.y - (ptrdiff_t)padding_size;    
+    // Copy 'directions_n' tiles into shared memory
+    float val;
+    for (size_t direction_idx = 0; direction_idx < directions_n; direction_idx++)
+    {
+        if(is_padding)
+        {
+            int col_offset, row_offset;
 
-    bool is_padding = col_local_shifted < 0 || col_local_shifted >= blockDim.x - (ptrdiff_t)padding_size_twice || 
-                      row_local_shifted < 0 || row_local_shifted >= blockDim.y - (ptrdiff_t)padding_size_twice;        
+            if(left_shift < 0)
+            {
+                col_offset = -padding_size;
+                row_offset = 0;
 
-    if(is_padding)                      
-        return;
+                if(is_padding_zeros) { val = 0.f; }
+                else { val = *((float*)((char*)im_templates + (direction_idx * height + row_global + row_offset) * im_templates_pitch) + col_global + col_offset); }
+
+                im_template_shr[direction_idx][non_pad_y + row_offset][non_pad_x + col_offset] = val;
+            }
+
+            if(left_shift < 0 && top_shift < 0)
+            {
+                col_offset = -padding_size;
+                row_offset = -padding_size;
+
+                if(is_padding_zeros) { val = 0.f; }
+                else { val = *((float*)((char*)im_templates + (direction_idx * height + row_global + row_offset) * im_templates_pitch) + col_global + col_offset); }
+
+                im_template_shr[direction_idx][non_pad_y + row_offset][non_pad_x + col_offset] = val;
+            }
+
+            if(left_shift < 0 && bottom_shift >= BLOCK_SIZE)
+            {
+                col_offset = -padding_size;
+                row_offset = padding_size;
+
+                if(is_padding_zeros) { val = 0.f; }
+                else { val = *((float*)((char*)im_templates + (direction_idx * height + row_global + row_offset) * im_templates_pitch) + col_global + col_offset); }
+
+                im_template_shr[direction_idx][non_pad_y + row_offset][non_pad_x + col_offset] = val;
+            }
+
+            if(right_shift >= BLOCK_SIZE)
+            {
+                col_offset = padding_size;
+                row_offset = 0;
+
+                if(is_padding_zeros) { val = 0.f; }
+                else { val = *((float*)((char*)im_templates + (direction_idx * height + row_global + row_offset) * im_templates_pitch) + col_global + col_offset); }
+
+                im_template_shr[direction_idx][non_pad_y + row_offset][non_pad_x + col_offset] = val;
+            }
+
+            if(right_shift >= BLOCK_SIZE && top_shift < 0)
+            {
+                col_offset = padding_size;
+                row_offset = -padding_size;
+
+                if(is_padding_zeros) { val = 0.f; }
+                else { val = *((float*)((char*)im_templates + (direction_idx * height + row_global + row_offset) * im_templates_pitch) + col_global + col_offset); }
+
+                im_template_shr[direction_idx][non_pad_y + row_offset][non_pad_x + col_offset] = val;
+            }
+
+            if(right_shift >= BLOCK_SIZE && bottom_shift >= BLOCK_SIZE)
+            {
+                col_offset = padding_size;
+                row_offset = padding_size;
+
+                if(is_padding_zeros) { val = 0.f; }
+                else { val = *((float*)((char*)im_templates + (direction_idx * height + row_global + row_offset) * im_templates_pitch) + col_global + col_offset); }
+
+                im_template_shr[direction_idx][non_pad_y + row_offset][non_pad_x + col_offset] = val;
+            }
+
+            if(top_shift < 0)
+            {
+                col_offset = 0;
+                row_offset = -padding_size;
+
+                if(is_padding_zeros) { val = 0.f; }
+                else { val = *((float*)((char*)im_templates + (direction_idx * height + row_global + row_offset) * im_templates_pitch) + col_global + col_offset); }
+
+                im_template_shr[direction_idx][non_pad_y + row_offset][non_pad_x + col_offset] = val;
+            }
+
+            if(bottom_shift >= BLOCK_SIZE)
+            {
+                col_offset = 0;
+                row_offset = padding_size;
+
+                if(is_padding_zeros) { val = 0.f; }
+                else { val = *((float*)((char*)im_templates + (direction_idx * height + row_global + row_offset) * im_templates_pitch) + col_global + col_offset); }
+
+                im_template_shr[direction_idx][non_pad_y + row_offset][non_pad_x + col_offset] = val;
+            }
+        }
+
+        val = *((float*)((char*)im_templates + (direction_idx * height + row_global) * im_templates_pitch) + col_global);
+        im_template_shr[direction_idx][non_pad_y][non_pad_x] = val;
+    }
 
     __syncthreads(); 
 
@@ -145,8 +229,8 @@ d_first_corner_measures(const float* im_templates,
             // We have precomputed the valid kernel coord with corners removed in noncorner_coords
             for (size_t k = 0; k < mask_len; k++)
             {
-                const size_t curr_row = row_local_shifted + noncorner_coords[k].y;
-                const size_t curr_col = col_local_shifted + noncorner_coords[k].x;     
+                const size_t curr_row = threadIdx.y + noncorner_coords[k].y;
+                const size_t curr_col = threadIdx.x + noncorner_coords[k].x;     
                 
                 template_symmetric[i][j] += im_template_shr[i][curr_row][curr_col] * im_template_shr[j][curr_row][curr_col];
             }
@@ -166,9 +250,9 @@ d_first_corner_measures(const float* im_templates,
     // to save registers, the input matrix isn't coppied; thus, changed inplace
     const float det = determinant(template_symmetric, directions_n); 
 
-    float *corner_measure_row = (float*)((char*)corner_measure + row_global_shifted * corner_measure_pitch);
-    corner_measure_row[col_global_shifted] = det / (trc + eps);
-}              
+    float *corner_measure_row = (float*)((char*)corner_measure + row_global * corner_measure_pitch);
+    corner_measure_row[col_global] = det / (trc + eps);
+}   
 
 extern "C"
 int init_cuda_device(int argc, const char **argv)
@@ -273,7 +357,7 @@ float* first_corner_measures(const float *im_templates,
 
     // int THREADS = 16;
     dim3 block_dim(BLOCK_SIZE,BLOCK_SIZE);
-    dim3 grid_dim((width+useful_region-1)/useful_region, (height+useful_region-1)/useful_region);
+    dim3 grid_dim((width+BLOCK_SIZE-1)/BLOCK_SIZE, (height+BLOCK_SIZE-1)/BLOCK_SIZE);
     d_first_corner_measures<<<grid_dim, block_dim>>>(d_im_templates, 
                                                      d_im_templates_pitch, 
                                                      d_corner_measures, 
