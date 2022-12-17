@@ -292,7 +292,6 @@ int main(int argc, const char **argv)
     FOAGDD foagdd(directions_n, sigmas, rho, threshold);
 
     float time_taken = 0.f;
-    size_t num_iters = 30;
     for(size_t i=0; i<num_iters; i++)
     {
         auto start = std::chrono::steady_clock::now();
