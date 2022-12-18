@@ -9,10 +9,13 @@
 #include <opencv2/imgproc.hpp>
 #include <arrayfire.h>
 
+#include "time_inference.h"
 #include "FOAGDD.h"
 
 extern "C" int init_cuda_device(int argc, const char **argv);
 extern "C" float* first_corner_measures(float *im_templates, size_t width, size_t height, size_t directions_n, size_t patch_size, float eps);
+
+TimeInference time_inference;
 
 FOAGDD::FOAGDD(size_t directions_n, std::vector<float> sigmas, float rho, float threshold)
 :directions_n(directions_n), sigmas(sigmas), rho(rho), threshold(threshold)
@@ -191,20 +194,28 @@ void FOAGDD::preallocate_gpu_mem(size_t width, size_t height)
 cv::Mat FOAGDD::find_features(const cv::Mat &image)
 {
     cv::Mat image_gray;
+
+    time_inference.track("Preparing the image");
     if(image.channels() != 1)
         cv::cvtColor(image, image_gray, cv::COLOR_BGR2GRAY);
     else
         image.copyTo(image_gray);
 
     image_gray.convertTo(image_gray, CV_32F);
+    time_inference.track("Preparing the image");
 
     size_t image_width = image_gray.cols;
     size_t image_height = image_gray.rows;
 
+    time_inference.track("Preallocating GPU memory");
     preallocate_gpu_mem(image_width, image_height); // preallocate if necessary
+    time_inference.track("Preallocating GPU memory");
 
+    time_inference.track("Compute templates");
     std::vector<std::vector<cv::Mat>> im_templates = compute_templates(image_gray);
+    time_inference.track("Compute templates");
 
+    time_inference.track("First corner measures");
     std::vector<cv::Mat> im_templates_temp(im_templates.size());
     for(int i=0; i<im_templates.size(); i++)
     {
@@ -223,9 +234,13 @@ cv::Mat FOAGDD::find_features(const cv::Mat &image)
                                                     this->patch_size,
                                                     this->eps);
     cv::Mat corner_measure_cuda_mat(image_height, image_width, CV_32F, pcorner_measures);
+    time_inference.track("First corner measures");
 
+    time_inference.track("Non-maximum supression");
     cv::Mat points_of_interest = nonma(corner_measure_cuda_mat, this->threshold, this->nonma_radius);
+    time_inference.track("Non-maximum supression");
 
+    time_inference.track("Remaining corner measures");
     for(size_t sigma_idx=1; sigma_idx < this->sigmas.size(); sigma_idx++)
     {
         std::vector<cv::Point> points_of_interest_filtered;
@@ -261,7 +276,8 @@ cv::Mat FOAGDD::find_features(const cv::Mat &image)
             }
         }
         points_of_interest = cv::Mat(points_of_interest_filtered, true);
-    }        
+    }    
+    time_inference.track("Remaining corner measures");
 
     return points_of_interest;
 }

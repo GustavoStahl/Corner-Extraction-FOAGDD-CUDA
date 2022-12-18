@@ -8,6 +8,10 @@
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include "time_inference.h"
+
+TimeInference time_inference;
+
 cv::Mat nonma(cv::Mat cim, double threshold, size_t radius)
 {
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(radius, radius));
@@ -83,6 +87,7 @@ cv::Mat foagdd(const cv::Mat &img)
     int directions_n = 8, nonma_radius = 5;
     int lattice_size = 31; // consider the origin in the lattice
 
+    time_inference.track("Preparing the image");
     cv::Mat img_gray;
     if(img.channels() != 1)
         cv::cvtColor(img, img_gray, cv::COLOR_BGR2GRAY);
@@ -97,9 +102,13 @@ cv::Mat foagdd(const cv::Mat &img)
     int patch_size = 7;
     cv::Mat im_padded;
     cv::copyMakeBorder(img_gray, im_padded, patch_size, patch_size, patch_size, patch_size, cv::BORDER_REFLECT);
+    time_inference.track("Preparing the image");
 
+    time_inference.track("Compute templates");
     std::vector<std::vector<cv::Mat>> im_templates = compute_templates(im_padded, directions_n, sigmas, rho, lattice_size);
+    time_inference.track("Compute templates");
 
+    time_inference.track("Mask creation");
     cv::Mat mask = cv::Mat::ones(patch_size, patch_size, CV_8U), mask_indexes;
     mask.at<unsigned char>(0,0) = 0;
     mask.at<unsigned char>(0,1) = 0;
@@ -115,7 +124,9 @@ cv::Mat foagdd(const cv::Mat &img)
     mask.at<unsigned char>(patch_size-1,patch_size-2) = 0;
     cv::findNonZero(mask, mask_indexes);
     size_t mask_len = mask_indexes.total();
+    time_inference.track("Mask creation");
 
+    time_inference.track("First corner measures");
     cv::Mat corner_measure(rows, cols, CV_64F);
     #pragma omp parallel for collapse(2)
     for(size_t i=0; i<rows; i++)
@@ -140,9 +151,13 @@ cv::Mat foagdd(const cv::Mat &img)
             corner_measure.at<double>(i,j) = cv::determinant(template_symmetric) / (cv::trace(template_symmetric)[0] + eps);
         }
     }
+    time_inference.track("First corner measures");
 
+    time_inference.track("Non-maximum supression");
     cv::Mat points_of_interest = nonma(corner_measure, threshold, nonma_radius);
+    time_inference.track("Non-maximum supression");
 
+    time_inference.track("Remaining corner measures");
     for(size_t sigma_idx=1; sigma_idx < sigmas.size(); sigma_idx++)
     {
         std::vector<cv::Point> points_of_interest_filtered;
@@ -176,14 +191,17 @@ cv::Mat foagdd(const cv::Mat &img)
         }
         points_of_interest = cv::Mat(points_of_interest_filtered, true);
     }   
+    time_inference.track("Remaining corner measures");
 
     std::vector<int> output; 
+    time_inference.track("Creating the output");
     for(size_t point_idx=0; point_idx < points_of_interest.total(); point_idx++)
     {
         cv::Point point = points_of_interest.at<cv::Point>(point_idx);
         output.push_back(point.y);
         output.push_back(point.x);
     }
+    time_inference.track("Creating the output");
 
     return points_of_interest;
 }

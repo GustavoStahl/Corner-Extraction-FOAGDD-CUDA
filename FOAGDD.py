@@ -2,6 +2,9 @@ import sys
 import numpy as np
 from time import time
 import cv2
+from time_inference import TimeInference
+
+time_inference = TimeInference()
 
 def nonma(cim, threshold, radius):
     rows, cols = cim.shape[:2]
@@ -54,15 +57,19 @@ def foagdd(_im, threshold):
     eps = 2.22e-16 
     nonma_radius = 5
 
+    time_inference.track("Preparing the image")
     if im.ndim >= 3 and im.shape[2] != 1:
         im = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
     rows, cols = im.shape[:2]
 
     patch_size = 7
     im_padded = cv2.copyMakeBorder(im, patch_size, patch_size, patch_size, patch_size, cv2.BORDER_REFLECT).astype(np.float32)
+    time_inference.track("Preparing the image")
 
     lattice_size = 31 # consider the origin in the lattice
+    time_inference.track("Compute templates")
     templates = compute_templates(im_padded, directions_n, sigmas, rho, lattice_size)
+    time_inference.track("Compute templates")
 
     # NOTE: The code below is creating the following mask
     # ┌───────┐
@@ -75,6 +82,7 @@ def foagdd(_im, threshold):
     # │0011100│
     # └───────┘
 
+    time_inference.track("Mask creation")
     mask = np.ones((patch_size,patch_size), dtype=bool)
     mask[0,:2] = False
     mask[0,-2:] = False
@@ -84,7 +92,9 @@ def foagdd(_im, threshold):
     mask[-2,-1] = False
     mask[-1,:2] = False
     mask[-1,-2:] = False
+    time_inference.track("Mask creation")
 
+    time_inference.track("First corner measures")
     corner_measure = np.empty((rows, cols), dtype=float)
     for (i,j) in np.ndindex(rows,cols):
         top = i + patch_size - 3
@@ -98,9 +108,13 @@ def foagdd(_im, threshold):
         mat = templates_slice @ templates_slice.T
         #NOTE approximation of: product of eigenvalues / sum of eigenvalues
         corner_measure[i, j] = np.linalg.det(mat) / (np.trace(mat) + eps) 
+    time_inference.track("First corner measures")
             
+    time_inference.track("Non-maximum supression")
     points_of_interest = nonma(corner_measure, threshold, nonma_radius)
+    time_inference.track("Non-maximum supression")
 
+    time_inference.track("Remaining corner measures")
     for sigma_idx in range(1, len(sigmas)):
         poi_maintained_mask = []
         for (i,j) in points_of_interest:
@@ -118,6 +132,8 @@ def foagdd(_im, threshold):
             poi_maintained_mask.append(corner_measure > threshold)
 
         points_of_interest = points_of_interest[poi_maintained_mask]
+    time_inference.track("Remaining corner measures")
+
     return points_of_interest        
 
 if __name__ == "__main__":
