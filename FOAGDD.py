@@ -3,12 +3,6 @@ import numpy as np
 from time import time
 import cv2
 
-def assert_arrays(array_name, array_new):
-    array_prev = np.load(f"gt_arrays/{array_name}.npy", allow_pickle=True)
-    array_diff = np.abs(array_prev - array_new)
-    assert array_diff.max() <= 1e-5, f"{array_name} don't match. Min {array_diff.min()}, Max {array_diff.max()}"
-    print(f"{array_name} match. Min {array_diff.min()}, Max {array_diff.max()}")
-
 def nonma(cim, threshold, radius):
     rows, cols = cim.shape[:2]
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (radius, radius))
@@ -70,9 +64,6 @@ def foagdd(_im, threshold):
     lattice_size = 31 # consider the origin in the lattice
     templates = compute_templates(im_padded, directions_n, sigmas, rho, lattice_size)
 
-    # assert_arrays("templates", templates)
-    # templates = np.load("gt_arrays/templates.npy", allow_pickle=True)
-
     # NOTE: The code below is creating the following mask
     # ┌───────┐
     # │0011100│
@@ -108,10 +99,7 @@ def foagdd(_im, threshold):
         #NOTE approximation of: product of eigenvalues / sum of eigenvalues
         corner_measure[i, j] = np.linalg.det(mat) / (np.trace(mat) + eps) 
             
-    # assert_arrays("measure", measure) #! test
-
     points_of_interest = nonma(corner_measure, threshold, nonma_radius)
-    # assert_arrays("measure_nonma", points_of_interest)
 
     for sigma_idx in range(1, len(sigmas)):
         poi_maintained_mask = []
@@ -156,8 +144,3 @@ if __name__ == "__main__":
         cv2.drawMarker(im, poi, color, cv2.MARKER_SQUARE, markerSize=2, thickness=1, line_type=cv2.LINE_AA)
 
     cv2.imwrite("data/result.jpg", im)
-
-    # cv2.namedWindow("FOAGDD", 0)
-    # cv2.imshow("FOAGDD", im)
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
