@@ -131,7 +131,7 @@ if __name__ == "__main__":
         start = time()
         poi_arr = foagdd(im, 10 ** 8.4)   
         if i > 0:
-            time_taken = time() - start
+            time_taken += time() - start
 
     print(f"Average elapsed time in seconds: {time_taken/(num_iters-1)} s")
     print(f"Points of interest found: {poi_arr.shape}")
