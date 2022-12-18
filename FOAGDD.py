@@ -49,7 +49,7 @@ def compute_templates(image, directions_n, sigmas, rho, lattice_size):
             templates[direction_idx, sigma_idx] = np.abs(template)
     return templates            
 
-def foggdd(_im, threshold):
+def foagdd(_im, threshold):
     im = _im.copy()
 
     rho = 1.5
@@ -132,7 +132,7 @@ def foggdd(_im, threshold):
 
 if __name__ == "__main__":
     im = cv2.imread("data/17.bmp")
-    poi_arr = foggdd(im, 10 ** 8.4)   
+    poi_arr = foagdd(im, 10 ** 8.4)   
     poi_arr_prev = poi_arr[0:1] # np.load("gt_arrays/measure_3.npy")
 
     print(f"Points of interest found: {poi_arr.shape}")
@@ -153,7 +153,7 @@ if __name__ == "__main__":
 
     cv2.imwrite("data/result.jpg", im)
 
-    # cv2.namedWindow("FOGGDD", 0)
-    # cv2.imshow("FOGGDD", im)
+    # cv2.namedWindow("FOAGDD", 0)
+    # cv2.imshow("FOAGDD", im)
     # cv2.waitKey(0)
     # cv2.destroyAllWindows()

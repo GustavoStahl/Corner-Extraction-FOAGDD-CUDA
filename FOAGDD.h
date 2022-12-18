@@ -1,5 +1,5 @@
-#ifndef FOGGDD_H
-#define FOGGDD_H
+#ifndef FOAGDD_H
+#define FOAGDD_H
 
 #include <stdio.h>
 #include <math.h>

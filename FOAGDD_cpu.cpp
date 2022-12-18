@@ -76,7 +76,7 @@ std::vector<std::vector<cv::Mat>> compute_templates(const cv::Mat &im_padded, in
     return im_templates;
 }
 
-cv::Mat foggdd(const cv::Mat &img)
+cv::Mat foagdd(const cv::Mat &img)
 {
     double rho = 1.5, eps = 2.22e-16, threshold = pow(10, 8.4);
     std::vector<double> sigmas = {1.5, 3.0, 4.5};
@@ -209,7 +209,7 @@ int main(int argc, char **argv)
     cv::Mat points_of_interest;
 
     auto start = std::chrono::steady_clock::now();
-    points_of_interest = foggdd(img);
+    points_of_interest = foagdd(img);
     auto end = std::chrono::steady_clock::now();
     std::cout << "Elapsed time in milliseconds: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
 
