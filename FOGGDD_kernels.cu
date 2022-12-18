@@ -73,136 +73,44 @@ d_first_corner_measures(const float* im_templates,
                         const float eps)
 {    
     const int padding_size = filter_size/2; // floor division
+    const int padding_size_twice = 2 * padding_size; 
 
-    // NOTE: the use of ptrdiff_t is due to signed and unsigned conversions
     const int col_global = threadIdx.x + blockIdx.x * blockDim.x;
     const int row_global = threadIdx.y + blockIdx.y * blockDim.y;
 
-    // Check if thread is outside the image "padded" region
+    // Check if thread is outside the image region
     if (col_global >= width || row_global >= height)
         return;
 
     __shared__ float im_template_shr[DIRECTIONS_MAX][BLOCK_SIZE+FILTER_MAX-1][BLOCK_SIZE+FILTER_MAX-1];
 
-    const int non_pad_x = threadIdx.x + padding_size;
-    const int non_pad_y = threadIdx.y + padding_size;
-
-    bool is_padding = false;
-    bool is_padding_zeros = false;
-
-    const int left_shift = threadIdx.x - padding_size;
-    const int right_shift = threadIdx.x + padding_size;
-    const int top_shift = threadIdx.y - padding_size;
-    const int bottom_shift = threadIdx.y + padding_size;
-
-    is_padding = (left_shift < 0 || right_shift >= BLOCK_SIZE ||
-                  top_shift < 0 || bottom_shift >= BLOCK_SIZE);
-
-    if(is_padding)
-    {
-        is_padding_zeros = col_global - padding_size < 0 || col_global + padding_size >= width ||
-                           row_global - padding_size < 0 || row_global + padding_size >= height;        
-    }
-
     // Copy 'directions_n' tiles into shared memory
-    float val;
     for (size_t direction_idx = 0; direction_idx < directions_n; direction_idx++)
     {
-        if(is_padding)
+        for (int row_offset = -BLOCK_SIZE; row_offset <= BLOCK_SIZE; row_offset += BLOCK_SIZE)
         {
-            int col_offset, row_offset;
-
-            if(left_shift < 0)
+            for (int col_offset = -BLOCK_SIZE; col_offset <= BLOCK_SIZE; col_offset += BLOCK_SIZE)
             {
-                col_offset = -padding_size;
-                row_offset = 0;
 
-                if(is_padding_zeros) { val = 0.f; }
-                else { val = *((float*)((char*)im_templates + (direction_idx * height + row_global + row_offset) * im_templates_pitch) + col_global + col_offset); }
-
-                im_template_shr[direction_idx][non_pad_y + row_offset][non_pad_x + col_offset] = val;
-            }
-
-            if(left_shift < 0 && top_shift < 0)
-            {
-                col_offset = -padding_size;
-                row_offset = -padding_size;
-
-                if(is_padding_zeros) { val = 0.f; }
-                else { val = *((float*)((char*)im_templates + (direction_idx * height + row_global + row_offset) * im_templates_pitch) + col_global + col_offset); }
-
-                im_template_shr[direction_idx][non_pad_y + row_offset][non_pad_x + col_offset] = val;
-            }
-
-            if(left_shift < 0 && bottom_shift >= BLOCK_SIZE)
-            {
-                col_offset = -padding_size;
-                row_offset = padding_size;
-
-                if(is_padding_zeros) { val = 0.f; }
-                else { val = *((float*)((char*)im_templates + (direction_idx * height + row_global + row_offset) * im_templates_pitch) + col_global + col_offset); }
-
-                im_template_shr[direction_idx][non_pad_y + row_offset][non_pad_x + col_offset] = val;
-            }
-
-            if(right_shift >= BLOCK_SIZE)
-            {
-                col_offset = padding_size;
-                row_offset = 0;
-
-                if(is_padding_zeros) { val = 0.f; }
-                else { val = *((float*)((char*)im_templates + (direction_idx * height + row_global + row_offset) * im_templates_pitch) + col_global + col_offset); }
-
-                im_template_shr[direction_idx][non_pad_y + row_offset][non_pad_x + col_offset] = val;
-            }
-
-            if(right_shift >= BLOCK_SIZE && top_shift < 0)
-            {
-                col_offset = padding_size;
-                row_offset = -padding_size;
-
-                if(is_padding_zeros) { val = 0.f; }
-                else { val = *((float*)((char*)im_templates + (direction_idx * height + row_global + row_offset) * im_templates_pitch) + col_global + col_offset); }
-
-                im_template_shr[direction_idx][non_pad_y + row_offset][non_pad_x + col_offset] = val;
-            }
-
-            if(right_shift >= BLOCK_SIZE && bottom_shift >= BLOCK_SIZE)
-            {
-                col_offset = padding_size;
-                row_offset = padding_size;
-
-                if(is_padding_zeros) { val = 0.f; }
-                else { val = *((float*)((char*)im_templates + (direction_idx * height + row_global + row_offset) * im_templates_pitch) + col_global + col_offset); }
-
-                im_template_shr[direction_idx][non_pad_y + row_offset][non_pad_x + col_offset] = val;
-            }
-
-            if(top_shift < 0)
-            {
-                col_offset = 0;
-                row_offset = -padding_size;
-
-                if(is_padding_zeros) { val = 0.f; }
-                else { val = *((float*)((char*)im_templates + (direction_idx * height + row_global + row_offset) * im_templates_pitch) + col_global + col_offset); }
-
-                im_template_shr[direction_idx][non_pad_y + row_offset][non_pad_x + col_offset] = val;
-            }
-
-            if(bottom_shift >= BLOCK_SIZE)
-            {
-                col_offset = 0;
-                row_offset = padding_size;
-
-                if(is_padding_zeros) { val = 0.f; }
-                else { val = *((float*)((char*)im_templates + (direction_idx * height + row_global + row_offset) * im_templates_pitch) + col_global + col_offset); }
-
-                im_template_shr[direction_idx][non_pad_y + row_offset][non_pad_x + col_offset] = val;
+                const int curr_col = threadIdx.x + padding_size + col_offset;
+                const int curr_row = threadIdx.y + padding_size + row_offset;
+    
+                if(curr_col < 0 || curr_col >= BLOCK_SIZE + padding_size_twice ||
+                   curr_row < 0 || curr_row >= BLOCK_SIZE + padding_size_twice)
+                {
+                    continue;
+                }
+    
+                float val = 0.f;
+                if(col_global + col_offset >= 0 && col_global + col_offset < width &&
+                   row_global + row_offset >= 0 && row_global + row_offset < height)
+                {
+                    val = *((float*)((char*)im_templates + (direction_idx * height + row_global + row_offset) * im_templates_pitch) + col_global + col_offset);
+                }
+    
+                im_template_shr[direction_idx][curr_row][curr_col] = val;
             }
         }
-
-        val = *((float*)((char*)im_templates + (direction_idx * height + row_global) * im_templates_pitch) + col_global);
-        im_template_shr[direction_idx][non_pad_y][non_pad_x] = val;
     }
 
     __syncthreads(); 
