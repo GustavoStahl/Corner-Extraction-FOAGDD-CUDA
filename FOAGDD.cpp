@@ -2,13 +2,14 @@
 #include <math.h>
 #include <chrono>
 #include <vector>
-#include "FOAGDD.h"
 
 #include <Eigen/Dense>
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/imgproc.hpp>
 #include <arrayfire.h>
+
+#include "FOAGDD.h"
 
 extern "C" int init_cuda_device(int argc, const char **argv);
 extern "C" float* first_corner_measures(float *im_templates, size_t width, size_t height, size_t directions_n, size_t patch_size, float eps);
@@ -270,7 +271,7 @@ int main(int argc, const char **argv)
     init_cuda_device(argc, argv);
 
     size_t num_iters = 1;
-    std::string image_path = "../data/RnzgH.jpg";
+    std::string image_path = "../data/17.bmp";
 
     if(argc >= 2)
     {

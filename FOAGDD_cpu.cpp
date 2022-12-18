@@ -98,10 +98,7 @@ cv::Mat foagdd(const cv::Mat &img)
     cv::Mat im_padded;
     cv::copyMakeBorder(img_gray, im_padded, patch_size, patch_size, patch_size, patch_size, cv::BORDER_REFLECT);
 
-    auto start = std::chrono::steady_clock::now();
     std::vector<std::vector<cv::Mat>> im_templates = compute_templates(im_padded, directions_n, sigmas, rho, lattice_size);
-    auto end = std::chrono::steady_clock::now();
-    std::cout << "Computed templates: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
 
     cv::Mat mask = cv::Mat::ones(patch_size, patch_size, CV_8U), mask_indexes;
     mask.at<unsigned char>(0,0) = 0;
@@ -120,7 +117,6 @@ cv::Mat foagdd(const cv::Mat &img)
     size_t mask_len = mask_indexes.total();
 
     cv::Mat corner_measure(rows, cols, CV_64F);
-    start = std::chrono::steady_clock::now();
     #pragma omp parallel for collapse(2)
     for(size_t i=0; i<rows; i++)
     {
@@ -144,15 +140,9 @@ cv::Mat foagdd(const cv::Mat &img)
             corner_measure.at<double>(i,j) = cv::determinant(template_symmetric) / (cv::trace(template_symmetric)[0] + eps);
         }
     }
-    end = std::chrono::steady_clock::now();
-    std::cout << "Iter through the first scale: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
 
-    start = std::chrono::steady_clock::now();
     cv::Mat points_of_interest = nonma(corner_measure, threshold, nonma_radius);
-    end = std::chrono::steady_clock::now();
-    std::cout << "Nonma: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
 
-    start = std::chrono::steady_clock::now();
     for(size_t sigma_idx=1; sigma_idx < sigmas.size(); sigma_idx++)
     {
         std::vector<cv::Point> points_of_interest_filtered;
@@ -185,9 +175,7 @@ cv::Mat foagdd(const cv::Mat &img)
             }
         }
         points_of_interest = cv::Mat(points_of_interest_filtered, true);
-    }    
-    end = std::chrono::steady_clock::now();
-    std::cout << "Iter through scales: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
+    }   
 
     std::vector<int> output; 
     for(size_t point_idx=0; point_idx < points_of_interest.total(); point_idx++)
@@ -205,21 +193,39 @@ int main(int argc, char **argv)
     Eigen::initParallel();
     std::cout << "Eigen will be using: " << Eigen::nbThreads() << " threads\n";
 
-    cv::Mat img = cv::imread("../data/17.bmp");
+    size_t num_iters = 1;
+    std::string image_path = "../data/17.bmp";
+
+    if(argc >= 2)
+    {
+        num_iters = std::stoi(argv[1]);
+        std::cout << "[INFO] Iter number provided: " << num_iters << "\n";
+    }
+    if(argc >= 3)
+    {
+        image_path = argv[2];
+    }
+
+    cv::Mat img = cv::imread(image_path);
     cv::Mat points_of_interest;
 
-    auto start = std::chrono::steady_clock::now();
-    points_of_interest = foagdd(img);
-    auto end = std::chrono::steady_clock::now();
-    std::cout << "Elapsed time in milliseconds: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
+    float time_taken = 0.f;
+    for(size_t i=0; i<num_iters; i++)
+    {
+        auto start = std::chrono::steady_clock::now();
+        points_of_interest = foagdd(img);
+        auto end = std::chrono::steady_clock::now();
+        if(i > 0)
+            time_taken += std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    }
+    std::cout << "Average elapsed time in milliseconds: " << time_taken/(num_iters-1.f) << " ms\n";
+    std::cout << "Points of interest found: " << points_of_interest.size() << "\n";
 
     for(size_t point_idx=0; point_idx < points_of_interest.total(); point_idx++)
     {
         cv::Point point = points_of_interest.at<cv::Point>(point_idx);
         cv::drawMarker(img, point, cv::Scalar(0,0,255), cv::MARKER_SQUARE, 2, 1, cv::LINE_AA);
     }
-    cv::namedWindow("jonas", 0);
-    cv::imshow("jonas", img);
-    cv::waitKey(0);
-    cv::destroyAllWindows();
+
+    cv::imwrite("../data/result.jpg", img);
 }

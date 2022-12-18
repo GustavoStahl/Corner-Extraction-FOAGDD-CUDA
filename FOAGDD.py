@@ -1,4 +1,6 @@
+import sys
 import numpy as np
+from time import time
 import cv2
 
 def assert_arrays(array_name, array_new):
@@ -131,24 +133,26 @@ def foagdd(_im, threshold):
     return points_of_interest        
 
 if __name__ == "__main__":
-    im = cv2.imread("data/17.bmp")
-    poi_arr = foagdd(im, 10 ** 8.4)   
-    poi_arr_prev = poi_arr[0:1] # np.load("gt_arrays/measure_3.npy")
+    num_iters = int(sys.argv[1]) if len(sys.argv) >= 2 else 1
+    image_path = sys.argv[2] if len(sys.argv) >= 3 else "data/17.bmp"
 
+    im = cv2.imread(image_path)
+
+    time_taken = 0
+    for i in range(num_iters):
+        start = time()
+        poi_arr = foagdd(im, 10 ** 8.4)   
+        if i > 0:
+            time_taken = time() - start
+
+    print(f"Average elapsed time in seconds: {time_taken/(num_iters-1)} s")
     print(f"Points of interest found: {poi_arr.shape}")
 
     # [[y1,x1],...] --> [[x1,y1],...]
     poi_arr = np.flip(poi_arr,axis=-1)
-    poi_arr_prev = np.flip(poi_arr_prev,axis=-1) 
 
-    for poi in np.unique(np.vstack((poi_arr, poi_arr_prev)), axis=0):
-        if (poi == poi_arr_prev).all(1).any() and (poi == poi_arr).all(1).any():
-            color = (0,255,0)
-        elif (poi == poi_arr_prev).all(1).any():
-            color = (0,0,255)
-        else:
-            color = (255,0,0)
-
+    for poi in poi_arr:
+        color = (255,0,0)
         cv2.drawMarker(im, poi, color, cv2.MARKER_SQUARE, markerSize=2, thickness=1, line_type=cv2.LINE_AA)
 
     cv2.imwrite("data/result.jpg", im)
