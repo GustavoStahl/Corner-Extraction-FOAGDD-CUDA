@@ -317,7 +317,12 @@ int main(int argc, const char **argv)
         if(i > 0)
             time_taken += std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
     }
-    std::cout << "Average elapsed time in milliseconds: " << time_taken/(num_iters-1.f) << " ms\n";
+    if(num_iters != 1)
+    {
+        num_iters -= 1.f;
+    }
+
+    std::cout << "Average elapsed time in milliseconds: " << time_taken/(num_iters) << " ms\n";
     std::cout << "Points of interest found: " << points_of_interest.size() << "\n";
 
     for(size_t point_idx=0; point_idx < points_of_interest.total(); point_idx++)

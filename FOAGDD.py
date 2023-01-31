@@ -149,6 +149,9 @@ if __name__ == "__main__":
         if i > 0:
             time_taken += time() - start
 
+    if num_iters != 1:
+        num_iters -= 1.0
+
     print(f"Average elapsed time in seconds: {time_taken/(num_iters-1)} s")
     print(f"Points of interest found: {poi_arr.shape}")
 
