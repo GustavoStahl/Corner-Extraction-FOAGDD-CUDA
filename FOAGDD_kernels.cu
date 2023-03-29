@@ -2,7 +2,6 @@
 #include <iostream>
 
 #include "helper_cuda.h"
-#include "helper_npp.h"
 
 #define DIRECTIONS_MAX 8
 #define FILTER_MAX 7
