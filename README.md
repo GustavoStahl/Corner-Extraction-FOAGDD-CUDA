@@ -1,5 +1,11 @@
 # Corner extraction FOAGDD CUDA
-This repository implements the FOAGDD corner extraction method on the GPU using the CUDA language. For more information regarding the optimizations with respect to the original FOAGDD proprosal please refer to [this](https://repositorio.unesp.br/bitstream/handle/11449/239092/stahl_gh_tcc_bauru.pdf?sequence=6&isAllowed=y) paper.
+This repository implements the FOAGDD corner extraction method on the GPU using NVIDIA's CUDA.
+
+The chart below shows the speed-up obtained with this implementation.
+
+![alt](https://i.imgur.com/pSWydOk.png)
+
+For more information regarding the optimization process and the improvements obtained regarding the original FOAGDD proposal please refer to the paper [Parallelization of the FOAGDD point of interest extraction technique using the CUDA architecture](https://repositorio.unesp.br/bitstream/handle/11449/239092/stahl_gh_tcc_bauru.pdf?sequence=6&isAllowed=y) (Portuguese version).
 
 ## Requirements
 C++ libraries
@@ -18,7 +24,7 @@ There are three implementations for the FOAGDD:
 - `FOAGDD_cpu.cpp`: implementation in CPP using OpenMP to accelerate some `for` loops
 - `FOAGDD.cpp`: implementation in CPP leveraging CUDA kernels to accelerate some computations.
 
-To build the binaries for the C++ code run the following commands
+To build the binaries for the C++ code run the following commands:
 ```
 mkdir build
 cd build
